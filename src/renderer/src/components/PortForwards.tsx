@@ -1,0 +1,136 @@
+import { useState } from 'react'
+import type { PortForwardStatus } from '@shared/types.js'
+
+interface Props {
+  forwards: PortForwardStatus[]
+  enabled: boolean
+}
+
+export function PortForwards({ forwards, enabled }: Props) {
+  const [expanded, setExpanded] = useState(true)
+  const [showForm, setShowForm] = useState(false)
+  const [localPort, setLocalPort] = useState('')
+  const [remoteHost, setRemoteHost] = useState('127.0.0.1')
+  const [remotePort, setRemotePort] = useState('')
+  const [error, setError] = useState<string | null>(null)
+
+  const addForward = async () => {
+    setError(null)
+    const lp = Number(localPort)
+    const rp = Number(remotePort)
+    if (!lp || lp < 1 || lp > 65535) { setError('Invalid local port'); return }
+    if (!rp || rp < 1 || rp > 65535) { setError('Invalid remote port'); return }
+    if (!remoteHost.trim()) { setError('Remote host required'); return }
+
+    const r = await window.portico.addPortForward({
+      localPort: lp,
+      remoteHost: remoteHost.trim(),
+      remotePort: rp
+    })
+    if (!r.ok) {
+      setError(r.error.message)
+      return
+    }
+    setLocalPort('')
+    setRemotePort('')
+    setShowForm(false)
+  }
+
+  const removeForward = async (id: string) => {
+    await window.portico.removePortForward(id)
+  }
+
+  return (
+    <div className="pf-section">
+      <header onClick={() => setExpanded(!expanded)}>
+        <h3>
+          <span className={`pf-chevron ${expanded ? 'open' : ''}`}>&#9654;</span>
+          Port Forwards
+          {forwards.length > 0 && <span className="pf-count">{forwards.length}</span>}
+        </h3>
+        {enabled && (
+          <button
+            className="btn ghost"
+            style={{ fontSize: 11, padding: '2px 8px' }}
+            onClick={(e) => { e.stopPropagation(); setShowForm(!showForm) }}
+          >
+            + Add
+          </button>
+        )}
+      </header>
+      {expanded && (
+        <div className="pf-body">
+          {showForm && enabled && (
+            <div className="pf-form">
+              <div
+                className="pf-form-row"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    void addForward()
+                  }
+                }}
+              >
+                <input
+                  type="number"
+                  placeholder="Local"
+                  value={localPort}
+                  onChange={(e) => setLocalPort(e.target.value)}
+                  min={1}
+                  max={65535}
+                  className="pf-input"
+                />
+                <span className="pf-arrow">&rarr;</span>
+                <input
+                  placeholder="Host"
+                  value={remoteHost}
+                  onChange={(e) => setRemoteHost(e.target.value)}
+                  className="pf-input pf-input-host"
+                  spellCheck={false}
+                />
+                <span className="pf-colon">:</span>
+                <input
+                  type="number"
+                  placeholder="Port"
+                  value={remotePort}
+                  onChange={(e) => setRemotePort(e.target.value)}
+                  min={1}
+                  max={65535}
+                  className="pf-input"
+                />
+                <button className="btn primary" style={{ fontSize: 11, padding: '3px 8px' }} onClick={addForward}>
+                  Add
+                </button>
+              </div>
+              {error && <div className="pf-error">{error}</div>}
+            </div>
+          )}
+          {forwards.length === 0 ? (
+            <div className="pf-empty">No port forwards</div>
+          ) : (
+            <div className="pf-list">
+              {forwards.map((f) => (
+                <div key={f.id} className={`pf-item ${f.state === 'error' ? 'pf-item-err' : ''}`}>
+                  <span className={`pf-dot ${f.state === 'listening' ? 'pf-dot-ok' : 'pf-dot-err'}`} />
+                  <span className="pf-rule">
+                    :{f.localPort} &rarr; {f.remoteHost}:{f.remotePort}
+                  </span>
+                  {f.activeConnections > 0 && (
+                    <span className="pf-conns">{f.activeConnections} conn</span>
+                  )}
+                  <button
+                    className="pf-remove"
+                    onClick={() => removeForward(f.id)}
+                    title="Remove forward"
+                  >
+                    &times;
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
