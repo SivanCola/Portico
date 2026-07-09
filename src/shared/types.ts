@@ -26,7 +26,12 @@ export interface SshTarget {
 export interface ProviderSession {
   /** The provider Portico believes is active, either detected or user-forced. */
   provider: ProviderId
-  /** Whether the user is currently inside an interactive CLI session. */
+  /**
+   * Whether the user is inside an interactive CLI session (vs bare shell
+   * command mode). MVP always runs an interactive PTY, so this stays `true`
+   * unless a future build detects a non-interactive invocation. Codex's
+   * `codex -i` formatting is reserved for `interactive: false`.
+   */
   interactive: boolean
   /** Whether the adapter may attempt native clipboard-image paste. */
   nativePasteAvailable: boolean

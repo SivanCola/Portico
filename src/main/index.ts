@@ -147,6 +147,9 @@ app.whenReady().then(() => {
   controller.pfListeners.add((forwards: PortForwardStatus[]) =>
     mainWindow?.webContents.send(IPC.PF_CHANGED, forwards)
   )
+  controller.sessionListeners.add((session) =>
+    mainWindow?.webContents.send(IPC.SESSION_CHANGED, session)
+  )
 
   registerIpc(controller)
 

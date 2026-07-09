@@ -53,6 +53,7 @@ export class PorticoController {
   shelfListeners = new Set<(item: ShelfItem) => void>()
   connStateListeners = new Set<(payload: ConnStatePayload) => void>()
   pfListeners = new Set<(forwards: PortForwardStatus[]) => void>()
+  sessionListeners = new Set<(session: ProviderSession) => void>()
 
   constructor(private readonly getWindow: () => BrowserWindow | null) {}
 
@@ -97,6 +98,9 @@ export class PorticoController {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
+    // Mark close as handled before tearing down so the intentional SSH close
+    // event does not surface a spurious "session closed" warning.
+    this.closeHandled = true
     try {
       await this.session?.disconnect()
     } finally {
@@ -123,6 +127,7 @@ export class PorticoController {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
+    this.closeHandled = true
     try {
       await this.session?.disconnect()
     } catch { /* ignore */ }
@@ -144,7 +149,7 @@ export class PorticoController {
     if (info.intentional) {
       log.info('controller', 'session closed intentionally')
       this.setConnState('disconnected')
-      this.pushStatus('warn', 'SSH session closed.')
+      // User-initiated disconnect already set state; skip the warn banner.
       this.portForwarder?.destroyAll()
       this.portForwarder = null
       return
@@ -275,6 +280,8 @@ export class PorticoController {
       if (detected !== 'shell') {
         this.provider = detected
         this.providerLocked = true
+        this.pushSession()
+        this.pushStatus('info', `Detected ${detected}.`, 3000)
       }
     }
     for (const cb of this.outputListeners) cb(chunk)
@@ -321,7 +328,7 @@ export class PorticoController {
       const fragment = formatForProvider(provider, withPreview.remotePath, opts.prompt, sessionCtx)
 
       if (opts.inject) {
-        this.inject(fragment)
+        this.inject(fragment, provider)
       }
 
       this.commitShelfPlaceholder(placeholderId, withPreview, opts.prompt)
@@ -351,30 +358,31 @@ export class PorticoController {
     }
   }
 
-  private inject(fragment: string): void {
-    const endsNewline = /\n$/.test(fragment)
-    const text = endsNewline ? fragment : `${fragment}\n`
+  private inject(fragment: string, provider: ProviderId = this.provider): void {
+    // Shell comments are fine as a completed line. Claude/Codex REPLs treat
+    // Enter as submit — leave the fragment without a trailing newline so the
+    // user can edit the prompt before sending.
+    const text =
+      provider === 'shell'
+        ? /\n$/.test(fragment)
+          ? fragment
+          : `${fragment}\n`
+        : fragment
     this.session?.write(text)
   }
 
   // ---- session / provider --------------------------------------------------
 
   getSession(): Result<ProviderSession> {
-    return ok({
-      provider: this.provider,
-      interactive: this.interactive,
-      nativePasteAvailable: false
-    })
+    return ok(this.sessionSnapshot())
   }
 
   setProvider(provider: ProviderId): Result<ProviderSession> {
     this.provider = provider
     this.providerLocked = true
-    return ok({
-      provider,
-      interactive: this.interactive,
-      nativePasteAvailable: false
-    })
+    const snap = this.sessionSnapshot()
+    this.pushSession(snap)
+    return ok(snap)
   }
 
   detectProvider(): Result<ProviderId> {
@@ -385,7 +393,22 @@ export class PorticoController {
     // Apply the detection so subsequent pastes use the new provider.
     this.provider = detected
     this.providerLocked = true
+    this.pushSession()
     return ok(detected)
+  }
+
+  private sessionSnapshot(): ProviderSession {
+    return {
+      provider: this.provider,
+      // MVP always uses an interactive PTY; Codex `codex -i` stays reserved
+      // for a future non-interactive path.
+      interactive: this.interactive,
+      nativePasteAvailable: false
+    }
+  }
+
+  private pushSession(snap: ProviderSession = this.sessionSnapshot()): void {
+    for (const cb of this.sessionListeners) cb(snap)
   }
 
   // ---- port forwarding -----------------------------------------------------

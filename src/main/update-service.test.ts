@@ -28,6 +28,7 @@ interface FakeAutoUpdater {
   checkForUpdates: ReturnType<typeof vi.fn>
   quitAndInstall: ReturnType<typeof vi.fn>
   on: ReturnType<typeof vi.fn>
+  removeListener: ReturnType<typeof vi.fn>
 }
 
 let fakeUpdater: FakeAutoUpdater
@@ -58,6 +59,14 @@ vi.mock('electron-updater', () => ({
 }))
 
 function makeFakeUpdater(): FakeAutoUpdater {
+  const handlers = new Map<string, Set<(...args: unknown[]) => void>>()
+  const on = vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+    if (!handlers.has(event)) handlers.set(event, new Set())
+    handlers.get(event)!.add(listener)
+  })
+  const removeListener = vi.fn((event: string, listener: (...args: unknown[]) => void) => {
+    handlers.get(event)?.delete(listener)
+  })
   return {
     autoDownload: false,
     autoInstallOnAppQuit: false,
@@ -66,8 +75,11 @@ function makeFakeUpdater(): FakeAutoUpdater {
     logger: undefined,
     checkForUpdates: vi.fn().mockResolvedValue(null),
     quitAndInstall: vi.fn(),
-    on: vi.fn()
-  }
+    on,
+    removeListener,
+    // Expose for tests that need to count live handlers.
+    _handlers: handlers
+  } as FakeAutoUpdater & { _handlers: Map<string, Set<(...args: unknown[]) => void>> }
 }
 
 function setIsPackaged(value: boolean): void {
@@ -225,5 +237,44 @@ describe('UpdateService — packaged', () => {
     await svc.init()
     expect(fakeUpdater.autoDownload).toBe(true)
     expect(fakeUpdater.on).toHaveBeenCalled()
+  })
+
+  it('dispose removes listeners so re-init on the same singleton does not double fan-out', async () => {
+    setIsPackaged(true)
+    const { UpdateService } = await import('./update-service.js')
+    const svc = new UpdateService({ startupDelayMs: 100000 })
+    await svc.init()
+
+    const firstOnCount = fakeUpdater.on.mock.calls.length
+    expect(firstOnCount).toBeGreaterThan(0)
+
+    svc.dispose()
+    expect(fakeUpdater.removeListener).toHaveBeenCalledTimes(firstOnCount)
+
+    // Same singleton (macOS activate path) — re-init must not stack handlers.
+    await svc.init()
+    expect(fakeUpdater.on.mock.calls.length).toBe(firstOnCount * 2)
+
+    const seen: string[] = []
+    svc.listeners.add((s) => seen.push(s.state))
+
+    // Only the currently-bound handlers should fire (one per event).
+    const emit = (event: string, ...args: unknown[]) => {
+      const calls = fakeUpdater.on.mock.calls.filter((c) => c[0] === event)
+      // After dispose+re-init, only the latest registration should still be live.
+      // Our fake removeListener actually deletes from _handlers; drive via that.
+      const live = (fakeUpdater as FakeAutoUpdater & {
+        _handlers: Map<string, Set<(...a: unknown[]) => void>>
+      })._handlers.get(event)
+      if (live) for (const fn of live) fn(...args)
+      else {
+        // Fallback: last registered handler only
+        const last = calls[calls.length - 1]
+        if (last) (last[1] as (...a: unknown[]) => void)(...args)
+      }
+    }
+
+    emit('checking-for-update')
+    expect(seen).toEqual(['checking'])
   })
 })

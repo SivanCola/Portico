@@ -36,6 +36,8 @@ type AutoUpdater = {
   checkForUpdates(): Promise<unknown>
   quitAndInstall(): void
   on(event: string, listener: (...args: unknown[]) => void): unknown
+  removeListener?(event: string, listener: (...args: unknown[]) => void): unknown
+  removeAllListeners?(event?: string): unknown
 }
 
 export interface UpdateServiceOptions {
@@ -47,6 +49,8 @@ export class UpdateService {
   private autoUpdater: AutoUpdater | null = null
   private current: UpdateStatus = { state: 'idle' }
   private startupTimer: ReturnType<typeof setTimeout> | null = null
+  /** Bound handlers so dispose can detach them from the electron-updater singleton. */
+  private boundHandlers: Array<{ event: string; listener: (...args: unknown[]) => void }> = []
 
   /** Listeners receive every status transition (main forwards these to UI). */
   readonly listeners = new Set<(s: UpdateStatus) => void>()
@@ -84,29 +88,29 @@ export class UpdateService {
       autoDownload: autoUpdater.autoDownload
     })
 
-    autoUpdater.on('checking-for-update', () => {
+    this.bind(autoUpdater, 'checking-for-update', () => {
       log.info('updater', 'checking for updates')
       this.set({ state: 'checking' })
     })
-    autoUpdater.on('update-available', (info: unknown) => {
+    this.bind(autoUpdater, 'update-available', (info: unknown) => {
       const version = (info as { version?: string })?.version
       log.info('updater', 'update available', { version })
       this.set({ state: 'available', version, percent: undefined, message: undefined })
     })
-    autoUpdater.on('update-not-available', () => {
+    this.bind(autoUpdater, 'update-not-available', () => {
       log.info('updater', 'no update available')
       this.set({ state: 'not-available', message: 'You are on the latest version.' })
     })
-    autoUpdater.on('download-progress', (progress: unknown) => {
+    this.bind(autoUpdater, 'download-progress', (progress: unknown) => {
       const percent = (progress as { percent?: number })?.percent
       this.set({ state: 'downloading', percent })
     })
-    autoUpdater.on('update-downloaded', (info: unknown) => {
+    this.bind(autoUpdater, 'update-downloaded', (info: unknown) => {
       const version = (info as { version?: string })?.version
       log.info('updater', 'update downloaded', { version })
       this.set({ state: 'downloaded', version, percent: 100, message: 'Update ready. Restart to install.' })
     })
-    autoUpdater.on('error', (e: unknown) => {
+    this.bind(autoUpdater, 'error', (e: unknown) => {
       log.error('updater', 'update error', { err: e as Error })
       this.set({ state: 'error', message: (e as Error)?.message ?? 'Update check failed.' })
     })
@@ -118,14 +122,30 @@ export class UpdateService {
     }, delay)
   }
 
-  /** Tear down timers (called when all windows close / app quit). */
+  /** Tear down timers and detach electron-updater singleton listeners. */
   dispose(): void {
     if (this.startupTimer) {
       clearTimeout(this.startupTimer)
       this.startupTimer = null
     }
-    // Drop the updater handle so a later init() (macOS activate) can re-wire.
+    // electron-updater's autoUpdater is a module singleton — must remove our
+    // handlers or macOS activate → init() stacks duplicate fan-out.
+    if (this.autoUpdater) {
+      for (const { event, listener } of this.boundHandlers) {
+        this.autoUpdater.removeListener?.(event, listener)
+      }
+    }
+    this.boundHandlers = []
     this.autoUpdater = null
+  }
+
+  private bind(
+    autoUpdater: AutoUpdater,
+    event: string,
+    listener: (...args: unknown[]) => void
+  ): void {
+    autoUpdater.on(event, listener)
+    this.boundHandlers.push({ event, listener })
   }
 
   /**

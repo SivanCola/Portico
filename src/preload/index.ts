@@ -7,7 +7,7 @@
  */
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import { IPC, type ConnStatePayload, type PorticoApi, type StatusPayload } from '@shared/ipc.js'
-import type { PortForwardStatus, ShelfItem, UpdateStatus } from '@shared/types.js'
+import type { PortForwardStatus, ProviderSession, ShelfItem, UpdateStatus } from '@shared/types.js'
 
 const api: PorticoApi = {
   // Lifecycle
@@ -32,6 +32,11 @@ const api: PorticoApi = {
   getSession: () => ipcRenderer.invoke(IPC.GET_SESSION),
   setProvider: (provider) => ipcRenderer.invoke(IPC.SET_PROVIDER, provider),
   detectProvider: () => ipcRenderer.invoke(IPC.DETECT_PROVIDER),
+  onSessionChanged: (cb) => {
+    const h = (_e: IpcRendererEvent, session: ProviderSession) => cb(session)
+    ipcRenderer.on(IPC.SESSION_CHANGED, h)
+    return () => ipcRenderer.removeListener(IPC.SESSION_CHANGED, h)
+  },
   // Shelf
   shelfList: () => ipcRenderer.invoke(IPC.SHELF_LIST),
   shelfClear: () => ipcRenderer.invoke(IPC.SHELF_CLEAR),

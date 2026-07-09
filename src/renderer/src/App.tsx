@@ -57,6 +57,9 @@ export function App() {
   // ---- live auto-update status from main ----------------------------------
   useEffect(() => window.portico.onUpdateStatus(setUpdateStatus), [])
 
+  // ---- live provider session from main (auto-detect / setProvider) --------
+  useEffect(() => window.portico.onSessionChanged(setSession), [])
+
   // ---- refresh the provider session whenever connection changes -----------
   const refreshSession = useCallback(async () => {
     const r = await window.portico.getSession()
@@ -285,8 +288,7 @@ export function App() {
             pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
             return
           }
-          // Apply detection so subsequent pastes use the new provider.
-          await setProvider(r.value)
+          // Main already applied detection and pushed SESSION_CHANGED.
           pushStatus({ level: 'info', message: `Provider set to ${r.value}`, ttlMs: 3000 })
         }
       },
@@ -328,7 +330,6 @@ export function App() {
       installUpdate,
       disconnect,
       pushStatus,
-      setProvider,
       updateStatus?.state
     ]
   )
@@ -371,7 +372,7 @@ export function App() {
                   <strong style={{ textTransform: 'capitalize', color: 'var(--text)' }}>
                     {session?.provider ?? 'shell'}
                   </strong>
-                  {session?.interactive ? ' · interactive' : ' · command'}
+                  {session?.provider !== 'shell' ? ' · interactive REPL' : ''}
                 </span>
               </div>
               <Terminal />

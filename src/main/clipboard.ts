@@ -2,8 +2,7 @@
  * Clipboard + image normalization (main process only).
  *
  * Reads the Electron clipboard (nativeImage) and produces a NormalizedImage:
- *  - PNG sources are kept as PNG.
- *  - Any other bitmap source is normalized to PNG.
+ *  - PNG sources are kept as PNG when under the byte cap.
  *  - Oversized images are downscaled (long edge) and recompressed to JPEG so
  *    they fit the upload cap; if they still exceed the cap they are rejected
  *    with a clear message.
@@ -14,6 +13,7 @@
 import { clipboard, nativeImage } from 'electron'
 import { readFile } from 'node:fs/promises'
 import { basename } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   MAX_IMAGE_BYTES,
   MAX_IMAGE_LONG_EDGE,
@@ -24,9 +24,12 @@ import {
 import type { NormalizedImage } from '@shared/types.js'
 
 export function clipboardHasImage(): boolean {
-  // Prefer a real bitmap; copied image *files* show up as a path instead.
+  // Prefer a real bitmap; also treat a copied image *file* as present.
   const img = clipboard.readImage()
-  return !img.isEmpty()
+  if (!img.isEmpty()) return true
+  const path = filePathFromClipboard()
+  if (!path) return false
+  return isSupportedImagePath(path)
 }
 
 /** Read whatever image the clipboard currently holds, or null. */
@@ -56,11 +59,12 @@ export async function readClipboardImage(): Promise<NormalizedImage | null> {
  * macOS exposes `public.file-url`; Windows/Linux expose text/URI-list or a
  * bare path. Returns null when nothing usable is present.
  */
-function filePathFromClipboard(): string | null {
+export function filePathFromClipboard(): string | null {
   const tryFormats = [
     'public.file-url', // macOS
     'text/uri-list', // Linux / some Windows apps
-    'FileName' // Windows
+    'FileNameW', // Windows
+    'FileName' // Windows (ANSI / short path)
   ]
   for (const fmt of tryFormats) {
     const raw = readClipboardTextFormat(fmt)
@@ -69,6 +73,8 @@ function filePathFromClipboard(): string | null {
       .split(/\r?\n/)
       .map((s) => s.trim())
       .filter(Boolean)
+      // Skip URI-list comments.
+      .filter((s) => !s.startsWith('#'))
     for (const c of candidates) {
       const resolved = resolveCandidate(c)
       if (resolved) return resolved
@@ -88,19 +94,43 @@ function readClipboardTextFormat(fmt: string): string {
   }
 }
 
-function resolveCandidate(c: string): string | null {
-  if (c.startsWith('file://')) {
+/**
+ * Turn a clipboard candidate (file URL or bare path) into a filesystem path.
+ * Exported for unit tests — Windows `file:///C:/...` must not keep a leading `/`.
+ */
+export function resolveCandidate(c: string): string | null {
+  if (c.startsWith('file:')) {
+    let path: string | null = null
     try {
-      return decodeURIComponent(new URL(c).pathname)
+      // fileURLToPath correctly maps file:///Users/... → /Users/...
+      // On Windows hosts it also maps file:///C:/... → C:\...
+      // On Unix hosts the same Windows URL becomes "/C:/..." — normalize below.
+      path = fileURLToPath(c)
     } catch {
-      return null
+      try {
+        path = decodeURIComponent(new URL(c).pathname)
+      } catch {
+        return null
+      }
     }
+    return normalizeFsPath(path)
   }
   // Treat as a bare filesystem path if it looks absolute.
-  if (c.startsWith('/')) return c
+  if (c.startsWith('/')) return normalizeFsPath(c)
   // Windows drive path e.g. C:\...
   if (/^[A-Za-z]:[\\/]/.test(c)) return c
   return null
+}
+
+/** Strip a spurious leading slash before a Windows drive letter (Unix hosts). */
+function normalizeFsPath(path: string): string {
+  if (/^\/[A-Za-z]:[\\/]/.test(path)) return path.slice(1)
+  return path
+}
+
+function isSupportedImagePath(path: string): boolean {
+  const e = path.slice(path.lastIndexOf('.') + 1).toLowerCase()
+  return (SUPPORTED_IMAGE_EXTS as readonly string[]).includes(e)
 }
 
 /** Read & normalize an image file from disk by path. */
@@ -137,11 +167,13 @@ function normalizeNative(
     })
   }
 
-  // Decide encoding. Keep PNG for small/translucent art; JPEG for large photos.
+  // Keep PNG under the byte cap; otherwise JPEG. (preferExt used to bypass the
+  // size check for PNG sources and could upload >8MiB blobs.)
+  void preferExt
   let data: Buffer
   let ext: ImageExt
   const png = img.toPNG()
-  if (preferExt === 'png' || png.byteLength <= MAX_IMAGE_BYTES) {
+  if (png.byteLength <= MAX_IMAGE_BYTES) {
     data = png
     ext = 'png'
   } else {

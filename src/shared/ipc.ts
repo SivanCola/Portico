@@ -44,6 +44,8 @@ export const IPC = {
   GET_SESSION: 'portico:getSession',
   SET_PROVIDER: 'portico:setProvider',
   DETECT_PROVIDER: 'portico:detectProvider',
+  /** One-way: main pushes ProviderSession when auto-detect / setProvider changes it. */
+  SESSION_CHANGED: 'portico:session:changed',
 
   // Shelf
   SHELF_LIST: 'portico:shelf:list',
@@ -131,6 +133,7 @@ export interface PorticoApi {
   getSession(): Promise<Result<ProviderSession>>
   setProvider(provider: ProviderId): Promise<Result<ProviderSession>>
   detectProvider(): Promise<Result<ProviderId>>
+  onSessionChanged(cb: (session: ProviderSession) => void): () => void
 
   // Shelf
   shelfList(): Promise<Result<ShelfItem[]>>
