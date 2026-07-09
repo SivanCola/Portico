@@ -328,20 +328,29 @@ export class SshSession extends EventEmitter {
     return new Promise<string>((resolve, reject) => {
       let out = ''
       let settled = false
+      let stream: ClientChannel | null = null
       const done = (err?: Error) => {
         if (settled) return
         settled = true
-        timer && clearTimeout(timer)
+        if (timer) clearTimeout(timer)
+        if (err && stream) {
+          try {
+            stream.close()
+          } catch {
+            /* ignore */
+          }
+        }
         err ? reject(Object.assign(new Error(err.message), { code: 'SSH_EXEC' })) : resolve(out)
       }
       const timer = opts.timeoutMs
         ? setTimeout(() => done(new Error('command timed out')), opts.timeoutMs)
         : undefined
-      this.client!.exec(cmd, (e, stream) => {
+      this.client!.exec(cmd, (e, s) => {
         if (e) return done(e)
-        stream.on('data', (d: Buffer) => (out += d.toString('utf8')))
-        stream.stderr.on('data', () => {}) // swallow; capture stdout only
-        stream.on('close', () => done())
+        stream = s
+        s.on('data', (d: Buffer) => (out += d.toString('utf8')))
+        s.stderr.on('data', () => {}) // swallow; capture stdout only
+        s.on('close', () => done())
       })
     })
   }
@@ -357,8 +366,9 @@ export class SshSession extends EventEmitter {
     for (const it of list) {
       if (!match(it.filename)) continue
       await new Promise<void>((resolve) => {
-        sftp.unlink(`${abs}/${it.filename}`, () => {
-          deleted++
+        sftp.unlink(`${abs}/${it.filename}`, (e) => {
+          // Only count successful unlinks so the UI number matches reality.
+          if (!e) deleted++
           resolve()
         })
       })
@@ -400,13 +410,13 @@ export class SshSession extends EventEmitter {
 }
 
 async function mkdirP(sftp: SFTPWrapper, dir: string): Promise<void> {
-  await new Promise<void>((resolve) => {
+  await new Promise<void>((resolve, reject) => {
     sftp.mkdir(dir, (e) => {
       if (!e) return resolve()
       // ssh2 returns status 4 (FAILURE) when the dir already exists.
       const code = (e as { code?: number }).code
       if (code === 4 || /exists/i.test(e.message)) return resolve()
-      resolve() // be permissive; upload will surface real failures
+      reject(Object.assign(new Error(e.message), { code: 'SSH_MKDIR' }))
     })
   })
 }

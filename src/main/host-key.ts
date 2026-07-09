@@ -6,9 +6,13 @@
  *    (and known_hosts2 when present).
  *  - Hashed host entries (`|1|...`) are skipped — we cannot match them without
  *    the HMAC salt dance, and ssh2 does not expose a Hosts helper.
- *  - Unknown host (no matching entry): accept for this session, log a warn
- *    (first-connect UX).
- *  - Known host with mismatched key: reject with HOST_KEY_MISMATCH.
+ *  - Unknown host (no matching entry for this key type): accept for this
+ *    session, log a warn (first-connect / multi-algorithm host UX).
+ *  - Known host with a *same key-type* mismatched key: reject with
+ *    HOST_KEY_MISMATCH (true MITM signal).
+ *  - Host known only under a different algorithm: treat as unknown (accept),
+ *    not mismatch — multi-key servers commonly present ed25519 while only
+ *    rsa is recorded.
  */
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -92,11 +96,29 @@ export function loadKnownHosts(sshDir = join(homedir(), '.ssh')): KnownHostEntry
 }
 
 /**
+ * Extract the SSH key-type string from a wire-format public key blob
+ * (`string keytype || ...`). Returns null when the buffer is not parseable.
+ */
+export function keyTypeFromBlob(key: Buffer): string | null {
+  if (key.length < 4) return null
+  const len = key.readUInt32BE(0)
+  if (len <= 0 || len > 128 || 4 + len > key.length) return null
+  const type = key.subarray(4, 4 + len).toString('ascii')
+  // Key types look like "ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256".
+  if (!/^[a-z0-9@._-]+$/i.test(type)) return null
+  return type
+}
+
+/**
  * Decide whether `presented` matches known_hosts for `host`:`port`.
  * Returns:
- *  - 'accept' — match found, or no entry (first connect)
- *  - 'reject' — host is known but key differs
- *  - 'unknown' — no matching host entry (caller may accept with warn)
+ *  - 'match' — exact key blob found for this host
+ *  - 'mismatch' — host is known under the *same key type* with a different key
+ *  - 'unknown' — no matching host entry for this key type (first connect, or
+ *    only other algorithms recorded — not treated as MITM)
+ *
+ * Matching is keyed by key type so a host that has only `ssh-rsa` in
+ * known_hosts is not rejected when the server offers `ssh-ed25519`.
  */
 export function verifyHostKey(
   entries: KnownHostEntry[],
@@ -105,16 +127,28 @@ export function verifyHostKey(
   presented: Buffer
 ): 'match' | 'mismatch' | 'unknown' {
   const patterns = new Set(hostMatchPatterns(host, port))
-  let sawHost = false
+  const presentedType = keyTypeFromBlob(presented)
+  let sawSameType = false
 
   for (const entry of entries) {
     const hostHit = entry.hosts.some((h) => patterns.has(h))
     if (!hostHit) continue
-    sawHost = true
+
+    // Exact key match always wins, regardless of type metadata.
     if (entry.key.equals(presented)) return 'match'
+
+    // Only treat as a conflict when the known entry is the same algorithm.
+    // Different algorithms for the same host are common (multi-key servers).
+    const entryType = entry.keyType || keyTypeFromBlob(entry.key)
+    if (presentedType && entryType && entryType === presentedType) {
+      sawSameType = true
+    } else if (!presentedType) {
+      // Cannot classify the presented key; fall back to host-level presence.
+      sawSameType = true
+    }
   }
 
-  return sawHost ? 'mismatch' : 'unknown'
+  return sawSameType ? 'mismatch' : 'unknown'
 }
 
 /**

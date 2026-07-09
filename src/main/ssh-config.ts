@@ -71,19 +71,6 @@ function tokenize(content: string): TokenLine[] {
   return out
 }
 
-/**
- * Extract `Include` specs (in order of appearance) from a config body, so the
- * loader can expand them at their lexical position rather than attaching them
- * to a host block.
- */
-function extractIncludes(content: string): string[] {
-  const specs: string[] = []
-  for (const { keyword, args } of tokenize(content)) {
-    if (keyword === 'include' && args.length) specs.push(args.join(' '))
-  }
-  return specs
-}
-
 /** Remove a trailing `# comment`, respecting simple double-quoted segments. */
 function stripComment(line: string): string {
   let inQuote = false
@@ -95,6 +82,28 @@ function stripComment(line: string): string {
     }
   }
   return line
+}
+
+/** Apply a single non-Host, non-Include directive onto a host block. */
+function applyDirective(cur: SshHostBlock, keyword: string, args: string[]): void {
+  switch (keyword) {
+    case 'hostname':
+      if (args[0] && cur.hostName === undefined) cur.hostName = args[0]
+      break
+    case 'user':
+      if (args[0] && cur.user === undefined) cur.user = args[0]
+      break
+    case 'port':
+      if (args[0] && cur.port === undefined) {
+        const n = Number(args[0])
+        if (Number.isFinite(n) && n > 0) cur.port = n
+      }
+      break
+    case 'identityfile':
+      if (args[0] && cur.identityFile === undefined) cur.identityFile = expandHome(args[0])
+      break
+    // Other directives are intentionally ignored (out of scope).
+  }
 }
 
 /**
@@ -120,24 +129,7 @@ export function parseSshConfig(content: string): SshConfig {
     // Include is handled by the loader (needs filesystem context); ignore here.
     if (keyword === 'include') continue
     if (!cur) continue // directive before any Host — ignored by OpenSSH
-    switch (keyword) {
-      case 'hostname':
-        if (args[0] && cur.hostName === undefined) cur.hostName = args[0]
-        break
-      case 'user':
-        if (args[0] && cur.user === undefined) cur.user = args[0]
-        break
-      case 'port':
-        if (args[0] && cur.port === undefined) {
-          const n = Number(args[0])
-          if (Number.isFinite(n) && n > 0) cur.port = n
-        }
-        break
-      case 'identityfile':
-        if (args[0] && cur.identityFile === undefined) cur.identityFile = expandHome(args[0])
-        break
-      // Other directives are intentionally ignored (out of scope).
-    }
+    applyDirective(cur, keyword, args)
   }
 
   return config
@@ -209,16 +201,29 @@ function loadFile(
     return
   }
 
-  const parsed = parseSshConfig(content)
-  for (const block of parsed) into.push(block)
-
-  // Expand `Include` directives at their lexical position. OpenSSH merges
-  // included content inline; appending here is equivalent for our small
-  // directive set since first-match-wins resolution is order-stable.
-  for (const spec of extractIncludes(content)) {
-    for (const resolved of resolveInclude(spec, sshDir)) {
-      loadFile(resolved, sshDir, depth + 1, into, seen)
+  // Walk tokens in order so `Include` expands *inline* at its lexical position
+  // (OpenSSH semantics). Appending includes after the whole file would invert
+  // first-match-wins relative to a trailing `Host *` defaults block.
+  let cur: SshHostBlock | null = null
+  for (const { keyword, args } of tokenize(content)) {
+    if (keyword === 'include') {
+      // Include closes the current host context for subsequent directives in
+      // this file; OpenSSH re-enters Host blocks only on a new `Host` line.
+      cur = null
+      const spec = args.join(' ')
+      if (!spec) continue
+      for (const resolved of resolveInclude(spec, sshDir)) {
+        loadFile(resolved, sshDir, depth + 1, into, seen)
+      }
+      continue
     }
+    if (keyword === 'host') {
+      cur = { patterns: args.filter(Boolean) }
+      into.push(cur)
+      continue
+    }
+    if (!cur) continue
+    applyDirective(cur, keyword, args)
   }
 }
 

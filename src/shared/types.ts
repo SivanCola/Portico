@@ -113,6 +113,11 @@ export interface ShelfItem {
   previewUrl?: string
   status: 'ready' | 'uploading' | 'failed'
   error?: string
+  /**
+   * Local filesystem path when the item came from a file upload (not clipboard).
+   * Kept so a failed upload can be retried against the same file.
+   */
+  sourcePath?: string
 }
 
 /** Connection lifecycle state. */

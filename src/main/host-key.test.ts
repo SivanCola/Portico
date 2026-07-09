@@ -13,7 +13,8 @@ const {
   hostMatchPatterns,
   parseKnownHosts,
   verifyHostKey,
-  createHostVerifier
+  createHostVerifier,
+  keyTypeFromBlob
 } = await import('./host-key.js')
 import type { KnownHostEntry } from './host-key.js'
 
@@ -91,6 +92,26 @@ describe('verifyHostKey', () => {
       '|1|salt|hash ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILSgV91QxpxliyaQLHlsH2xbCFNLF1dHDsne+jAGkbIo\n'
     )
     expect(verifyHostKey(onlyHashed, 'example.com', 22, KEY_A)).toBe('unknown')
+  })
+
+  it('treats a different key algorithm as unknown (not mismatch)', () => {
+    // Host only has ssh-rsa recorded; server presents ssh-ed25519.
+    const rsaOnly = parseKnownHosts(
+      'multi.example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7examplekeymaterialnotreal000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000=\n'
+    )
+    // KEY_A is ssh-ed25519 wire format — no same-type entry, so not MITM.
+    expect(verifyHostKey(rsaOnly, 'multi.example.com', 22, KEY_A)).toBe('unknown')
+  })
+
+  it('still mismatches when the same key type differs', () => {
+    // KEY_A and KEY_B are both ssh-ed25519 wire blobs with different material.
+    expect(verifyHostKey(entries, 'example.com', 22, KEY_B)).toBe('mismatch')
+  })
+})
+
+describe('keyTypeFromBlob', () => {
+  it('reads the type string from a wire-format public key', () => {
+    expect(keyTypeFromBlob(KEY_A)).toBe('ssh-ed25519')
   })
 })
 

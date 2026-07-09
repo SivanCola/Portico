@@ -78,6 +78,12 @@ export function ConnectionForm({ onConnect, phase }: Props) {
   const [aliases, setAliases] = useState<SshHostAlias[]>([])
   /** Resolved target when the current `host` value matches an alias. */
   const [resolved, setResolved] = useState<ResolvedSshTarget | null>(null)
+  /**
+   * True once the user has manually edited the port field. Used so submit can
+   * apply config Port only when the form still holds the untouched default,
+   * without clobbering an intentional override (including back to 22).
+   */
+  const [portTouched, setPortTouched] = useState(false)
 
   // Load configured host aliases once for the dropdown. Best-effort: a missing
   // or empty ~/.ssh/config simply yields an empty list and the field behaves
@@ -97,16 +103,35 @@ export function ConnectionForm({ onConnect, phase }: Props) {
     setHost(r.alias ?? r.host)
     setUser(r.user)
     setPort(r.port)
+    setPortTouched(true) // recent entry is an explicit choice of port
     setAuth(r.auth)
     setPrivateKeyPath(r.privateKeyPath ?? '')
     setResolved(r.alias ? { matched: true, host: r.host, user: r.user, port: r.port, alias: r.alias } : null)
     setError(null)
   }
 
+  /**
+   * Apply config defaults into the form for fields the user has not set.
+   * Form values always win over config once present — never clobber overrides.
+   */
+  const applyResolvedDefaults = (
+    r: ResolvedSshTarget,
+    current: { user: string; port: number; portTouched: boolean; privateKeyPath: string }
+  ): { user: string; port: number; privateKeyPath: string; auth?: AuthMode } => {
+    const nextUser = current.user || r.user || ''
+    const nextPort =
+      current.portTouched ? current.port : r.port && r.port !== 22 ? r.port : current.port || r.port || 22
+    const nextKey = current.privateKeyPath || r.identityFile || ''
+    const nextAuth = r.identityFile && !current.privateKeyPath ? ('key' as const) : undefined
+    return { user: nextUser, port: nextPort, privateKeyPath: nextKey, auth: nextAuth }
+  }
+
   // When the host field loses focus, try to expand it as a ssh-config alias.
   // On a hit we fill in user/port/key (unless the user already typed them) and
   // switch to key auth when an IdentityFile is present — but we leave the host
   // field showing the alias so the user sees what they typed.
+  // Always resolve (even when the picker list is empty) so `Host *` defaults
+  // and glob-only configs still apply.
   const onHostBlur = async () => {
     const parsed = parseUserHost(host)
     if (parsed.user) {
@@ -118,11 +143,6 @@ export function ConnectionForm({ onConnect, phase }: Props) {
       setResolved(null)
       return
     }
-    // Skip the round-trip when there are no configured aliases at all.
-    if (aliases.length === 0) {
-      setResolved(null)
-      return
-    }
     try {
       const r = await window.portico.resolveSshAlias(candidate)
       if (!r.ok) {
@@ -131,14 +151,18 @@ export function ConnectionForm({ onConnect, phase }: Props) {
       }
       setResolved(r.value)
       if (r.value.matched) {
-        // Only auto-fill fields the user hasn't already set, so a manual
-        // override survives a stray blur.
-        if (!user) setUser(r.value.user ?? '')
-        if (port === 22 && r.value.port) setPort(r.value.port)
-        if (r.value.identityFile) {
-          setPrivateKeyPath((prev) => prev || r.value.identityFile!)
-          setAuth('key')
+        const filled = applyResolvedDefaults(r.value, {
+          user: parsed.user || user,
+          port,
+          portTouched,
+          privateKeyPath
+        })
+        if (filled.user !== user) setUser(filled.user)
+        if (filled.port !== port) setPort(filled.port)
+        if (filled.privateKeyPath && filled.privateKeyPath !== privateKeyPath) {
+          setPrivateKeyPath(filled.privateKeyPath)
         }
+        if (filled.auth) setAuth(filled.auth)
       }
     } catch {
       setResolved(null)
@@ -155,12 +179,16 @@ export function ConnectionForm({ onConnect, phase }: Props) {
     // while carrying the alias along for display only.
     const parsed = parseUserHost(host)
     const finalHostInput = parsed.host.trim()
-    const finalUserInput = (parsed.user || user).trim()
+    let formUser = (parsed.user || user).trim()
+    let formPort = Number(port) || 22
+    let formKey = privateKeyPath.trim()
+    let formAuth = auth
 
     // Use already-resolved data if the field hasn't changed since the blur;
     // otherwise resolve now so typing+Enter without blurring still works.
+    // Always attempt resolve — glob-only configs (Host *) have empty alias lists.
     let res = resolved && resolved.alias === finalHostInput ? resolved : null
-    if (!res && aliases.length > 0) {
+    if (!res && finalHostInput) {
       try {
         const r = await window.portico.resolveSshAlias(finalHostInput)
         if (r.ok && r.value.matched) res = r.value
@@ -170,10 +198,25 @@ export function ConnectionForm({ onConnect, phase }: Props) {
     }
 
     const isAlias = !!res?.matched
+    if (isAlias && res) {
+      const filled = applyResolvedDefaults(res, {
+        user: formUser,
+        port: formPort,
+        portTouched,
+        privateKeyPath: formKey
+      })
+      formUser = filled.user
+      formPort = filled.port
+      formKey = filled.privateKeyPath
+      if (filled.auth) formAuth = filled.auth
+    }
+
+    // HostName comes from config; user/port/key always from the form (after
+    // gap-fill above), so manual overrides survive Connect.
     const finalHost = isAlias ? res!.host : finalHostInput
-    const finalUser = (isAlias ? res!.user ?? finalUserInput : finalUserInput) || ''
-    const finalPort = isAlias ? res!.port : Number(port) || 22
-    const finalKey = isAlias ? res!.identityFile ?? privateKeyPath : privateKeyPath
+    const finalUser = formUser
+    const finalPort = formPort
+    const finalKey = formKey
     const finalAlias = isAlias ? finalHostInput : undefined
 
     const target: SshTarget = {
@@ -181,10 +224,10 @@ export function ConnectionForm({ onConnect, phase }: Props) {
       host: finalHost,
       user: finalUser,
       port: finalPort,
-      password: auth === 'password' ? password || undefined : undefined,
-      privateKeyPath: auth === 'key' ? finalKey || undefined : undefined,
-      privateKeyPassphrase: auth === 'key' ? passphrase || undefined : undefined,
-      useAgent: auth === 'agent' ? true : undefined,
+      password: formAuth === 'password' ? password || undefined : undefined,
+      privateKeyPath: formAuth === 'key' ? finalKey || undefined : undefined,
+      privateKeyPassphrase: formAuth === 'key' ? passphrase || undefined : undefined,
+      useAgent: formAuth === 'agent' ? true : undefined,
       alias: finalAlias
     }
     const err = await onConnect(target)
@@ -205,13 +248,19 @@ export function ConnectionForm({ onConnect, phase }: Props) {
     }
   }
 
+  // Effective credentials for the enable check: an unresolved alias with
+  // IdentityFile can authenticate via key even if the toggle still says password.
+  const effectiveKey = privateKeyPath.trim() || (resolved?.matched ? resolved.identityFile : '') || ''
   const canSubmit =
     !busy &&
     !!host.trim() &&
     !!(user.trim() || host.includes('@') || resolved?.matched) &&
     (auth === 'agent' ||
       (auth === 'password' && !!password) ||
-      (auth === 'key' && !!privateKeyPath))
+      (auth === 'key' && !!effectiveKey) ||
+      // Alias resolved to a key path while the toggle is still on password with
+      // no password typed — submit will switch to key (see applyResolvedDefaults).
+      (auth === 'password' && !password && !!effectiveKey && !!resolved?.matched))
 
   return (
     <form className="connect-card" onSubmit={submit}>
@@ -240,7 +289,7 @@ export function ConnectionForm({ onConnect, phase }: Props) {
             // Invalidate the cached resolution if the field is edited.
             if (resolved && resolved.alias !== e.target.value.trim()) setResolved(null)
           }}
-          onBlur={onHostBlur}
+          onBlur={() => void onHostBlur()}
           placeholder="hostname or SSH alias"
           list="portico-ssh-hosts"
           autoFocus
@@ -271,7 +320,10 @@ export function ConnectionForm({ onConnect, phase }: Props) {
           <input
             type="number"
             value={port}
-            onChange={(e) => setPort(Number(e.target.value))}
+            onChange={(e) => {
+              setPortTouched(true)
+              setPort(Number(e.target.value))
+            }}
             min={1}
             max={65535}
           />

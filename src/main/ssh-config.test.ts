@@ -191,6 +191,34 @@ describe('loadSshConfig (filesystem + Include)', () => {
     expect(resolveAlias('top-level', cfg).host).toBe('top.example.com')
   })
 
+  it('expands Include inline so trailing Host * does not steal earlier values', () => {
+    // Classic OpenSSH layout: specific hosts via Include, then Host * defaults.
+    // If Include were appended after the whole file, Host * would win User.
+    const orderDir = join(dir, 'include-order')
+    mkdirSync(join(orderDir, 'config.d'), { recursive: true })
+    writeFileSync(
+      join(orderDir, 'config'),
+      ['Include config.d/*', 'Host *', '  User wrong', '  Port 22'].join('\n')
+    )
+    writeFileSync(
+      join(orderDir, 'config.d', 'myserver'),
+      ['Host myserver', '  HostName 10.0.0.4', '  User correct', '  Port 2222'].join('\n')
+    )
+
+    const cfg = loadSshConfig(orderDir)
+    // Included block must appear before Host * in the merged list.
+    const patterns = cfg.map((b) => b.patterns.join(','))
+    expect(patterns.indexOf('myserver')).toBeLessThan(patterns.indexOf('*'))
+
+    const r = resolveAlias('myserver', cfg)
+    expect(r).toMatchObject({
+      matched: true,
+      host: '10.0.0.4',
+      user: 'correct',
+      port: 2222
+    })
+  })
+
   it('returns an empty config when the config file is missing', () => {
     const empty = loadSshConfig(join(dir, 'does-not-exist'))
     expect(empty).toEqual([])

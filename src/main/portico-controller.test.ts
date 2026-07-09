@@ -3,6 +3,7 @@
  * don't need a live SSH session.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { EventEmitter } from 'node:events'
 
 vi.mock('electron', () => ({
   BrowserWindow: class {},
@@ -10,14 +11,29 @@ vi.mock('electron', () => ({
   nativeImage: { createFromBuffer: () => ({ isEmpty: () => true }) }
 }))
 
+type ConnectResult = { initialCwd: string }
+
+/** Shared mutable state for the SshSession mock (hoisted-safe). */
+const mockState = {
+  connectImpl: async (): Promise<ConnectResult> => ({ initialCwd: '/home/u' }),
+  instances: [] as EventEmitter[]
+}
+
 vi.mock('./ssh-session.js', () => ({
-  SshSession: class {
-    connect = vi.fn()
-    disconnect = vi.fn()
+  SshSession: class extends EventEmitter {
+    connect = vi.fn(async () => mockState.connectImpl())
+    disconnect = vi.fn(async () => {
+      this.emit('close', { intentional: true })
+    })
     isConnected = () => false
     getClient = () => null
     recentOutput = () => []
-    on = vi.fn()
+    resize = vi.fn()
+    write = vi.fn()
+    constructor(_target: unknown) {
+      super()
+      mockState.instances.push(this)
+    }
   }
 }))
 
@@ -48,22 +64,24 @@ describe('PorticoController shelf', () => {
 
   beforeEach(() => {
     c = new PorticoController(() => null)
+    mockState.instances = []
+    mockState.connectImpl = async () => ({ initialCwd: '/home/u' })
   })
 
   it('shelfRemove drops an item by id', () => {
-    // Seed via private path: use shelfClear/list after forcing an item through fail path is hard;
-    // exercise public shelfClear / shelfList / shelfRemove on empty + after clear.
-    expect(c.shelfList().ok && c.shelfList().ok ? c.shelfList() : null)
     const list = c.shelfList()
     expect(list.ok).toBe(true)
     if (list.ok) expect(list.value).toEqual([])
 
-    // Manually inject via reflection-free approach: clear is no-op on empty.
     expect(c.shelfClear().ok).toBe(true)
     expect(c.shelfRemove('missing').ok).toBe(true)
   })
 
   it('assertTarget accepts agent auth', async () => {
+    // Force connect to fail after assertTarget so we only check credential validation.
+    mockState.connectImpl = async () => {
+      throw Object.assign(new Error('no agent'), { code: 'SSH_AGENT' })
+    }
     const r = await c.connect({
       id: 'u@h',
       host: 'example.com',
@@ -71,7 +89,6 @@ describe('PorticoController shelf', () => {
       port: 22,
       useAgent: true
     })
-    // Will fail at SSH layer (mocked), but must not be INVALID_TARGET.
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.error.code).not.toBe('INVALID_TARGET')
   })
@@ -87,5 +104,57 @@ describe('PorticoController shelf', () => {
     if (!r.ok) {
       expect(r.error.message).toMatch(/password|key|agent/i)
     }
+  })
+})
+
+describe('PorticoController reconnect cancel race', () => {
+  let c: InstanceType<typeof PorticoController>
+
+  beforeEach(() => {
+    c = new PorticoController(() => null)
+    mockState.instances = []
+    mockState.connectImpl = async () => ({ initialCwd: '/home/u' })
+  })
+
+  it('does not adopt a session that finished after cancelReconnect', async () => {
+    let releaseConnect: (() => void) | null = null
+    const connectGate = new Promise<void>((resolve) => {
+      releaseConnect = resolve
+    })
+
+    // First connect succeeds immediately (establish a session + target).
+    const connected = await c.connect({
+      id: 'u@h',
+      host: 'example.com',
+      user: 'u',
+      port: 22,
+      password: 'x'
+    })
+    expect(connected.ok).toBe(true)
+
+    // Next connect (reconnect) hangs until we release.
+    mockState.connectImpl = async () => {
+      await connectGate
+      return { initialCwd: '/home/u' }
+    }
+
+    // Simulate unexpected close → startReconnect → attemptReconnect.
+    const live = mockState.instances[mockState.instances.length - 1]
+    live.emit('close', { intentional: false })
+
+    // Wait a tick so attemptReconnect reaches the hanging connect().
+    await new Promise((r) => setTimeout(r, 30))
+
+    const cancel = await c.cancelReconnect()
+    expect(cancel.ok).toBe(true)
+
+    // Now the in-flight connect resolves — must not flip back to connected.
+    releaseConnect!()
+    await new Promise((r) => setTimeout(r, 30))
+
+    const state = c.getConnectionState()
+    expect(state.ok && state.value.state).toBe('disconnected')
+    const connectedAfter = c.isConnected()
+    expect(connectedAfter.ok && connectedAfter.value).toBe(false)
   })
 })

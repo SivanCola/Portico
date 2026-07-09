@@ -237,7 +237,12 @@ export function App() {
     (item: ShelfItem) => {
       void window.portico.shelfRemove(item.id)
       setShelf((prev) => prev.filter((i) => i.id !== item.id))
-      setPromptMode({ kind: 'clipboard' })
+      // Re-open the same source: file path when known, otherwise clipboard.
+      if (item.sourcePath) {
+        setPromptMode({ kind: 'file', path: item.sourcePath })
+      } else {
+        setPromptMode({ kind: 'clipboard' })
+      }
     },
     []
   )

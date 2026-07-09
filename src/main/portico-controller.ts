@@ -49,6 +49,8 @@ export class PorticoController {
   private reconnectCancelled = false
   private closeHandled = false
   private portForwarder: PortForwarder | null = null
+  /** In-flight reconnect session so cancel/disconnect can abort a mid-connect attempt. */
+  private pendingReconnectSession: SshSession | null = null
 
   outputListeners = new Set<(data: string) => void>()
   statusListeners = new Set<(s: StatusPayload) => void>()
@@ -131,6 +133,13 @@ export class PorticoController {
     // Mark close as handled before tearing down so the intentional SSH close
     // event does not surface a spurious "session closed" warning.
     this.closeHandled = true
+    const pending = this.pendingReconnectSession
+    this.pendingReconnectSession = null
+    try {
+      await pending?.disconnect()
+    } catch {
+      /* ignore */
+    }
     try {
       await this.session?.disconnect()
     } finally {
@@ -163,9 +172,18 @@ export class PorticoController {
       this.reconnectTimer = null
     }
     this.closeHandled = true
+    const pending = this.pendingReconnectSession
+    this.pendingReconnectSession = null
+    try {
+      await pending?.disconnect()
+    } catch {
+      /* ignore */
+    }
     try {
       await this.session?.disconnect()
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
     this.session = null
     this.target = null
     this.portForwarder?.destroyAll()
@@ -233,9 +251,34 @@ export class PorticoController {
       try { await this.session?.disconnect() } catch { /* ignore */ }
       this.session = null
 
+      if (this.reconnectCancelled || !this.target) {
+        this.setConnState('disconnected')
+        return
+      }
+
       const session = new SshSession(this.target)
+      this.pendingReconnectSession = session
       this.attachSessionListeners(session)
-      await session.connect()
+      try {
+        await session.connect()
+      } finally {
+        // Clear only if we still own this pending handle (cancel may have nullified it).
+        if (this.pendingReconnectSession === session) {
+          this.pendingReconnectSession = null
+        }
+      }
+
+      // Cancel/disconnect may have raced while connect() was in flight.
+      if (this.reconnectCancelled || !this.target) {
+        try {
+          await session.disconnect()
+        } catch {
+          /* ignore */
+        }
+        this.setConnState('disconnected')
+        return
+      }
+
       this.session = session
       this.closeHandled = false
 
@@ -254,10 +297,15 @@ export class PorticoController {
       log.info('controller', 'reconnected', redactTarget(this.target))
       this.pushStatus('info', `Reconnected to ${this.target.user}@${this.target.host}.`, 5000)
     } catch (e) {
+      if (this.reconnectCancelled || !this.target) {
+        this.setConnState('disconnected')
+        return
+      }
+
       const delayMs = Math.min(30_000, 1000 * Math.pow(2, this.reconnectAttempt - 1))
       const delaySec = Math.round(delayMs / 1000)
       log.warn('controller', `reconnect attempt ${this.reconnectAttempt}/${MAX_RECONNECT_ATTEMPTS} failed`, {
-        ...redactTarget(this.target!),
+        ...redactTarget(this.target),
         nextRetryInSec: delaySec,
         err: e as Error
       })
@@ -351,6 +399,7 @@ export class PorticoController {
       prompt: args.prompt,
       forced: args.provider,
       inject: args.inject !== false,
+      sourcePath: args.path,
       load: async () => readImageFile(args.path)
     })
   }
@@ -359,6 +408,8 @@ export class PorticoController {
     prompt?: string
     forced?: ProviderId
     inject: boolean
+    /** Local filesystem path when the source was a file (for shelf retry). */
+    sourcePath?: string
     load: () => Promise<NormalizedImage | null>
   }): Promise<Result<UploadedBlob>> {
     let placeholderId: string | null = null
@@ -368,7 +419,7 @@ export class PorticoController {
       if (!img) return err('NO_IMAGE', 'No image found.')
 
       const previewUrl = previewDataUrl(img)
-      placeholderId = this.addShelfPlaceholder(previewUrl)
+      placeholderId = this.addShelfPlaceholder(previewUrl, opts.sourcePath)
 
       const { blob } = await uploadBlob(this.session, img)
       const withPreview: UploadedBlob = { ...blob, previewUrl }
@@ -514,7 +565,7 @@ export class PorticoController {
     return ok(true)
   }
 
-  private addShelfPlaceholder(previewUrl?: string): string {
+  private addShelfPlaceholder(previewUrl?: string, sourcePath?: string): string {
     const id = randomUUID()
     const item: ShelfItem = {
       id,
@@ -524,7 +575,8 @@ export class PorticoController {
       bytes: 0,
       status: 'uploading',
       uploadedAt: new Date().toISOString(),
-      previewUrl
+      previewUrl,
+      sourcePath
     }
     this.shelf.unshift(item)
     this.emitShelf(item)
