@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useI18n } from '../i18n/index.js'
 
 interface Props {
   open: boolean
@@ -10,21 +11,22 @@ interface Props {
 
 export function PastePromptDialog({
   open,
-  title = 'Paste image',
-  initialPrompt = 'Analyze this image',
+  title,
+  initialPrompt,
   onCancel,
   onConfirm
 }: Props) {
-  const [prompt, setPrompt] = useState(initialPrompt)
+  const { t } = useI18n()
+  const defaultPrompt = initialPrompt ?? t('paste.defaultPrompt')
+  const [prompt, setPrompt] = useState(defaultPrompt)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     if (open) {
-      setPrompt(initialPrompt)
-      // Focus after paint.
+      setPrompt(defaultPrompt)
       requestAnimationFrame(() => inputRef.current?.select())
     }
-  }, [open, initialPrompt])
+  }, [open, defaultPrompt])
 
   if (!open) return null
 
@@ -37,25 +39,25 @@ export function PastePromptDialog({
           if (e.key === 'Escape') onCancel()
           if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault()
-            onConfirm(prompt.trim() || initialPrompt)
+            onConfirm(prompt.trim() || defaultPrompt)
           }
         }}
       >
-        <h3>{title}</h3>
-        <p className="hint">Prompt injected with the remote image path. Edit before sending.</p>
+        <h3>{title ?? t('paste.titleClipboard')}</h3>
+        <p className="hint">{t('paste.hint')}</p>
         <input
           ref={inputRef}
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder="Analyze this image"
+          placeholder={t('paste.defaultPrompt')}
           spellCheck={false}
         />
         <div className="modal-actions">
           <button className="btn ghost" onClick={onCancel}>
-            Cancel
+            {t('common.cancel')}
           </button>
-          <button className="btn primary" onClick={() => onConfirm(prompt.trim() || initialPrompt)}>
-            Upload & paste
+          <button className="btn primary" onClick={() => onConfirm(prompt.trim() || defaultPrompt)}>
+            {t('paste.upload')}
           </button>
         </div>
       </div>

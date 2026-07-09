@@ -12,6 +12,12 @@ export interface TmuxPrefs {
   mode: TmuxEnterMode
   /** Session name for auto-enter (sanitized). Default `portico`. */
   sessionName: string
+  /**
+   * Sync remote copy → Mac clipboard:
+   * - accept OSC 52 from the PTY into Electron clipboard
+   * - on connect, best-effort `tmux set-option -g set-clipboard on`
+   */
+  syncRemoteClipboard: boolean
 }
 
 export interface TmuxSessionInfo {
@@ -23,7 +29,8 @@ export interface TmuxSessionInfo {
 
 export const DEFAULT_TMUX_PREFS: TmuxPrefs = {
   mode: 'off',
-  sessionName: 'portico'
+  sessionName: 'portico',
+  syncRemoteClipboard: true
 }
 
 /** Allow only safe session name characters (tmux is picky with specials). */
@@ -39,7 +46,9 @@ export function normalizeTmuxPrefs(partial: Partial<TmuxPrefs> = {}): TmuxPrefs 
       : DEFAULT_TMUX_PREFS.mode
   return {
     mode,
-    sessionName: sanitizeSessionName(partial.sessionName ?? DEFAULT_TMUX_PREFS.sessionName)
+    sessionName: sanitizeSessionName(partial.sessionName ?? DEFAULT_TMUX_PREFS.sessionName),
+    syncRemoteClipboard:
+      partial.syncRemoteClipboard ?? DEFAULT_TMUX_PREFS.syncRemoteClipboard
   }
 }
 
@@ -82,7 +91,7 @@ export function buildInTmuxCommand(): string {
  * Build the interactive PTY one-liner that attaches or creates a session.
  * Returns null when mode is `off`.
  */
-export function buildEnterShellCommand(prefs: TmuxPrefs): string | null {
+export function buildEnterShellCommand(prefs: Partial<TmuxPrefs>): string | null {
   const p = normalizeTmuxPrefs(prefs)
   if (p.mode === 'off') return null
   const name = shQuote(p.sessionName)
@@ -106,6 +115,18 @@ export function buildEnterShellCommand(prefs: TmuxPrefs): string | null {
 /** list-sessions with a stable format string. */
 export function buildListSessionsCommand(): string {
   return "tmux list-sessions -F '#{session_name}\t#{session_windows}\t#{session_attached}' 2>/dev/null"
+}
+
+/**
+ * Best-effort enable OSC 52 clipboard in the remote tmux server (no conf edit).
+ * Safe to run when tmux is missing — the shell no-ops.
+ */
+export function buildEnableClipboardCommand(): string {
+  return (
+    'command -v tmux >/dev/null 2>&1 && ' +
+    'tmux set-option -g set-clipboard on 2>/dev/null; ' +
+    'echo ok'
+  )
 }
 
 /** Attach to a named session (interactive line). */

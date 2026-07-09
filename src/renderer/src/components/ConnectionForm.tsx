@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { AuthMode, ConnectPhase, ResolvedSshTarget, SshHostAlias, SshTarget } from '@shared/types.js'
+import { useI18n } from '../i18n/index.js'
 
 interface Props {
   onConnect: (t: SshTarget) => Promise<string | null>
@@ -63,6 +64,7 @@ function parseUserHost(raw: string): { user?: string; host: string } {
 }
 
 export function ConnectionForm({ onConnect, phase }: Props) {
+  const { t } = useI18n()
   const [host, setHost] = useState('')
   const [user, setUser] = useState('')
   const [port, setPort] = useState(22)
@@ -264,7 +266,7 @@ export function ConnectionForm({ onConnect, phase }: Props) {
 
   return (
     <form className="connect-card" onSubmit={submit}>
-      <h2>Connect to a host</h2>
+      <h2>{t('connect.title')}</h2>
       {recent.length > 0 && (
         <div className="recent">
           {recent.map((r) => (
@@ -281,7 +283,7 @@ export function ConnectionForm({ onConnect, phase }: Props) {
         </div>
       )}
       <div className="field">
-        <label>Host</label>
+        <label>{t('connect.host')}</label>
         <input
           value={host}
           onChange={(e) => {
@@ -290,7 +292,7 @@ export function ConnectionForm({ onConnect, phase }: Props) {
             if (resolved && resolved.alias !== e.target.value.trim()) setResolved(null)
           }}
           onBlur={() => void onHostBlur()}
-          placeholder="hostname or SSH alias"
+          placeholder={t('connect.hostPlaceholder')}
           list="portico-ssh-hosts"
           autoFocus
           spellCheck={false}
@@ -306,17 +308,17 @@ export function ConnectionForm({ onConnect, phase }: Props) {
         {resolved?.matched && (
           <div className="hint">
             → {resolved.host}{resolved.port ? `:${resolved.port}` : ''}
-            {resolved.user ? ` (${resolved.user})` : ''} · from ~/.ssh/config
+            {resolved.user ? ` (${resolved.user})` : ''} · {t('connect.fromConfig')}
           </div>
         )}
       </div>
       <div className="row">
         <div className="field">
-          <label>User</label>
+          <label>{t('connect.user')}</label>
           <input value={user} onChange={(e) => setUser(e.target.value)} placeholder="ubuntu" spellCheck={false} />
         </div>
         <div className="field" style={{ maxWidth: 90 }}>
-          <label>Port</label>
+          <label>{t('connect.port')}</label>
           <input
             type="number"
             value={port}
@@ -335,26 +337,26 @@ export function ConnectionForm({ onConnect, phase }: Props) {
           className={`btn ghost ${auth === 'password' ? 'primary' : ''}`}
           onClick={() => setAuth('password')}
         >
-          Password
+          {t('auth.password')}
         </button>
         <button
           type="button"
           className={`btn ghost ${auth === 'key' ? 'primary' : ''}`}
           onClick={() => setAuth('key')}
         >
-          Private key
+          {t('auth.key')}
         </button>
         <button
           type="button"
           className={`btn ghost ${auth === 'agent' ? 'primary' : ''}`}
           onClick={() => setAuth('agent')}
         >
-          SSH agent
+          {t('auth.agent')}
         </button>
       </div>
       {auth === 'password' ? (
         <div className="field">
-          <label>Password</label>
+          <label>{t('connect.password')}</label>
           <input
             type="password"
             value={password}
@@ -365,7 +367,7 @@ export function ConnectionForm({ onConnect, phase }: Props) {
       ) : auth === 'key' ? (
         <>
           <div className="field">
-            <label>Private key path</label>
+            <label>{t('connect.privateKey')}</label>
             <div className="path-row">
               <input
                 value={privateKeyPath}
@@ -381,12 +383,12 @@ export function ConnectionForm({ onConnect, phase }: Props) {
                   if (r.ok && r.value) setPrivateKeyPath(r.value)
                 }}
               >
-                Browse…
+                {t('connect.browse')}
               </button>
             </div>
           </div>
           <div className="field">
-            <label>Passphrase (optional)</label>
+            <label>{t('connect.passphrase')}</label>
             <input
               type="password"
               value={passphrase}
@@ -397,13 +399,13 @@ export function ConnectionForm({ onConnect, phase }: Props) {
         </>
       ) : (
         <div className="field">
-          <label>SSH agent</label>
-          <div className="hint">Uses SSH_AUTH_SOCK on this machine. No password or key file needed.</div>
+          <label>{t('connect.agent')}</label>
+          <div className="hint">{t('connect.agentHint')}</div>
         </div>
       )}
       {error && <div className="err">{error}</div>}
       <button className="btn primary" type="submit" disabled={!canSubmit}>
-        {busy ? (phase ? PHASE_LABEL[phase] : 'Connecting…') : 'Connect'}
+        {busy ? (phase ? PHASE_LABEL[phase] : t('connect.connecting')) : t('connect.submit')}
       </button>
     </form>
   )

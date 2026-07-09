@@ -52,7 +52,16 @@ describe('buildAttachCommand', () => {
 })
 
 describe('normalizeTmuxPrefs', () => {
-  it('defaults mode to off', () => {
-    expect(normalizeTmuxPrefs({}).mode).toBe('off')
+  it('defaults mode to off and clipboard sync on', () => {
+    const p = normalizeTmuxPrefs({})
+    expect(p.mode).toBe('off')
+    expect(p.syncRemoteClipboard).toBe(true)
+  })
+})
+
+describe('buildEnableClipboardCommand', () => {
+  it('sets set-clipboard on', async () => {
+    const { buildEnableClipboardCommand } = await import('./tmux.js')
+    expect(buildEnableClipboardCommand()).toContain('set-clipboard on')
   })
 })

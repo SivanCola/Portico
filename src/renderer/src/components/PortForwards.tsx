@@ -1,12 +1,15 @@
 import { useState } from 'react'
 import type { PortForwardStatus } from '@shared/types.js'
+import { useI18n } from '../i18n/index.js'
 
 interface Props {
+  sessionId: string
   forwards: PortForwardStatus[]
   enabled: boolean
 }
 
-export function PortForwards({ forwards, enabled }: Props) {
+export function PortForwards({ sessionId, forwards, enabled }: Props) {
+  const { t } = useI18n()
   const [expanded, setExpanded] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [localPort, setLocalPort] = useState('')
@@ -22,7 +25,7 @@ export function PortForwards({ forwards, enabled }: Props) {
     if (!rp || rp < 1 || rp > 65535) { setError('Invalid remote port'); return }
     if (!remoteHost.trim()) { setError('Remote host required'); return }
 
-    const r = await window.portico.addPortForward({
+    const r = await window.portico.addPortForward(sessionId, {
       localPort: lp,
       remoteHost: remoteHost.trim(),
       remotePort: rp
@@ -37,7 +40,7 @@ export function PortForwards({ forwards, enabled }: Props) {
   }
 
   const removeForward = async (id: string) => {
-    await window.portico.removePortForward(id)
+    await window.portico.removePortForward(sessionId, id)
   }
 
   return (
@@ -45,7 +48,7 @@ export function PortForwards({ forwards, enabled }: Props) {
       <header onClick={() => setExpanded(!expanded)}>
         <h3>
           <span className={`pf-chevron ${expanded ? 'open' : ''}`}>&#9654;</span>
-          Port Forwards
+          {t('pf.title')}
           {forwards.length > 0 && <span className="pf-count">{forwards.length}</span>}
         </h3>
         {enabled && (
@@ -54,7 +57,7 @@ export function PortForwards({ forwards, enabled }: Props) {
             style={{ fontSize: 11, padding: '2px 8px' }}
             onClick={(e) => { e.stopPropagation(); setShowForm(!showForm) }}
           >
-            + Add
+            {t('pf.add')}
           </button>
         )}
       </header>
@@ -73,7 +76,7 @@ export function PortForwards({ forwards, enabled }: Props) {
               >
                 <input
                   type="number"
-                  placeholder="Local"
+                  placeholder={t('pf.local')}
                   value={localPort}
                   onChange={(e) => setLocalPort(e.target.value)}
                   min={1}
@@ -82,7 +85,7 @@ export function PortForwards({ forwards, enabled }: Props) {
                 />
                 <span className="pf-arrow">&rarr;</span>
                 <input
-                  placeholder="Host"
+                  placeholder={t('pf.host')}
                   value={remoteHost}
                   onChange={(e) => setRemoteHost(e.target.value)}
                   className="pf-input pf-input-host"
@@ -91,7 +94,7 @@ export function PortForwards({ forwards, enabled }: Props) {
                 <span className="pf-colon">:</span>
                 <input
                   type="number"
-                  placeholder="Port"
+                  placeholder={t('pf.port')}
                   value={remotePort}
                   onChange={(e) => setRemotePort(e.target.value)}
                   min={1}
@@ -106,7 +109,7 @@ export function PortForwards({ forwards, enabled }: Props) {
             </div>
           )}
           {forwards.length === 0 ? (
-            <div className="pf-empty">No port forwards</div>
+            <div className="pf-empty">{t('pf.empty')}</div>
           ) : (
             <div className="pf-list">
               {forwards.map((f) => (

@@ -120,8 +120,30 @@ export interface ShelfItem {
   sourcePath?: string
 }
 
+/** Runtime id for one Portico SSH tab/session (not SshTarget.id). */
+export type SessionId = string
+
 /** Connection lifecycle state. */
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting'
+
+/** Sidebar / list row for one local SSH session. */
+export interface SessionSummary {
+  id: SessionId
+  /** Display title (editable); default alias or user@host. */
+  title: string
+  target?: {
+    user: string
+    host: string
+    port: number
+    alias?: string
+  }
+  state: ConnectionState
+  phase?: ConnectPhase
+  provider: ProviderId
+  /** True when non-active session produced output (renderer-owned; main may omit). */
+  unread: boolean
+  createdAt: string
+}
 
 /** Fine-grained phase while `connecting` (shown in the connection form). */
 export type ConnectPhase =

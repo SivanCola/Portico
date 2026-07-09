@@ -27,9 +27,10 @@ import type {
   ProviderSession,
   PortForwardRule,
   PortForwardStatus,
-  ConnectionState,
   Result,
   ResolvedSshTarget,
+  SessionId,
+  SessionSummary,
   ShelfItem,
   SshHostAlias,
   SshTarget,
@@ -260,23 +261,26 @@ app.whenReady().then(() => {
 
   // Forward controller events to the renderer over one-way channels.
   // Closures always read the current `mainWindow`, so recreate-on-activate works.
-  controller.outputListeners.add((data) =>
-    mainWindow?.webContents.send(IPC.TERM_OUTPUT, data)
+  controller.outputListeners.add((p) =>
+    mainWindow?.webContents.send(IPC.TERM_OUTPUT, p)
   )
   controller.statusListeners.add((s: StatusPayload) =>
     mainWindow?.webContents.send(IPC.STATUS, s)
   )
-  controller.shelfListeners.add((item: ShelfItem) =>
-    mainWindow?.webContents.send(IPC.SHELF_ITEM_UPDATED, item)
+  controller.shelfListeners.add((p) =>
+    mainWindow?.webContents.send(IPC.SHELF_ITEM_UPDATED, p)
   )
   controller.connStateListeners.add((payload: ConnStatePayload) =>
     mainWindow?.webContents.send(IPC.CONN_STATE, payload)
   )
-  controller.pfListeners.add((forwards: PortForwardStatus[]) =>
-    mainWindow?.webContents.send(IPC.PF_CHANGED, forwards)
+  controller.pfListeners.add((p) =>
+    mainWindow?.webContents.send(IPC.PF_CHANGED, p)
   )
-  controller.sessionListeners.add((session) =>
-    mainWindow?.webContents.send(IPC.SESSION_CHANGED, session)
+  controller.sessionListeners.add((p) =>
+    mainWindow?.webContents.send(IPC.SESSION_CHANGED, p)
+  )
+  controller.sessionsListListeners.add((sessions: SessionSummary[]) =>
+    mainWindow?.webContents.send(IPC.SESSIONS_CHANGED, sessions)
   )
 
   registerIpc(controller)
@@ -334,32 +338,54 @@ function registerIpc(c: PorticoController): void {
       }
     })
 
+  // Multi-session
+  handle(IPC.SESSION_CREATE, () => c.createSession())
+  handleArg<SessionId, Result<true>>(IPC.SESSION_CLOSE, (id) => c.closeSession(id))
+  handle(IPC.SESSION_LIST, () => c.listSessions())
+  handleArg<{ sessionId: SessionId; title: string }, Result<SessionSummary>>(
+    IPC.SESSION_RENAME,
+    (a) => c.renameSession(a.sessionId, a.title)
+  )
+
   // Connection
-  handleArg<SshTarget, Result<ConnectResult>>(IPC.CONNECT, (t) => c.connect(t))
-  handle(IPC.DISCONNECT, () => c.disconnect())
-  handle(IPC.IS_CONNECTED, () => c.isConnected())
+  handleArg<{ sessionId: SessionId; target: SshTarget }, Result<ConnectResult>>(
+    IPC.CONNECT,
+    (a) => c.connect(a.sessionId, a.target)
+  )
+  handleArg<SessionId, Result<true>>(IPC.DISCONNECT, (id) => c.disconnect(id))
+  handleArg<SessionId, Result<boolean>>(IPC.IS_CONNECTED, (id) => c.isConnected(id))
   handle(IPC.CLIPBOARD_HAS_IMAGE, () => c.clipboardHasImage())
 
   // Terminal
-  ipcMain.on(IPC.TERM_INPUT, (_e, data: string) => c.sendInput(data))
-  ipcMain.on(IPC.TERM_RESIZE, (_e, cols: number, rows: number) => c.resize(cols, rows))
+  ipcMain.on(IPC.TERM_INPUT, (_e, sessionId: SessionId, data: string) =>
+    c.sendInput(sessionId, data)
+  )
+  ipcMain.on(IPC.TERM_RESIZE, (_e, sessionId: SessionId, cols: number, rows: number) =>
+    c.resize(sessionId, cols, rows)
+  )
 
   // Image bridge
   handleArg<PasteImageArgs, Result<UploadedBlob>>(IPC.PASTE_IMAGE, (a) => c.pasteImage(a))
-  handle(IPC.UPLOAD_CLIPBOARD, () => c.uploadClipboard())
-  handleArg<{ remotePath: string; prompt?: string }, Result<true>>(IPC.PASTE_REMOTE_PATH, (a) =>
-    c.pasteRemotePath(a.remotePath, a.prompt)
+  handleArg<SessionId, Result<UploadedBlob>>(IPC.UPLOAD_CLIPBOARD, (id) => c.uploadClipboard(id))
+  handleArg<{ sessionId: SessionId; remotePath: string; prompt?: string }, Result<true>>(
+    IPC.PASTE_REMOTE_PATH,
+    (a) => c.pasteRemotePath(a.sessionId, a.remotePath, a.prompt)
   )
 
-  // Session
-  handle(IPC.GET_SESSION, () => c.getSession())
-  handleArg<ProviderId, Result<ProviderSession>>(IPC.SET_PROVIDER, (p) => c.setProvider(p))
-  handle(IPC.DETECT_PROVIDER, () => c.detectProvider())
+  // Provider session
+  handleArg<SessionId, Result<ProviderSession>>(IPC.GET_SESSION, (id) => c.getSession(id))
+  handleArg<{ sessionId: SessionId; provider: ProviderId }, Result<ProviderSession>>(
+    IPC.SET_PROVIDER,
+    (a) => c.setProvider(a.sessionId, a.provider)
+  )
+  handleArg<SessionId, Result<ProviderId>>(IPC.DETECT_PROVIDER, (id) => c.detectProvider(id))
 
   // Shelf
-  handle(IPC.SHELF_LIST, () => c.shelfList())
-  handle(IPC.SHELF_CLEAR, () => c.shelfClear())
-  handleArg<string, Result<true>>(IPC.SHELF_REMOVE, (id) => c.shelfRemove(id))
+  handleArg<SessionId, Result<ShelfItem[]>>(IPC.SHELF_LIST, (id) => c.shelfList(id))
+  handleArg<SessionId, Result<true>>(IPC.SHELF_CLEAR, (id) => c.shelfClear(id))
+  handleArg<{ sessionId: SessionId; id: string }, Result<true>>(IPC.SHELF_REMOVE, (a) =>
+    c.shelfRemove(a.sessionId, a.id)
+  )
 
   // Local image upload
   handleArg<UploadLocalImageArgs, Result<UploadedBlob>>(
@@ -368,18 +394,32 @@ function registerIpc(c: PorticoController): void {
   )
 
   // Remote cache
-  handle(IPC.CLEAR_REMOTE_CACHE, () => c.clearRemoteCache())
+  handleArg<SessionId, Result<{ deleted: number }>>(IPC.CLEAR_REMOTE_CACHE, (id) =>
+    c.clearRemoteCache(id)
+  )
 
   // Connection state
-  handle(IPC.CONN_STATE, () => c.getConnectionState())
-  handle(IPC.CANCEL_RECONNECT, () => c.cancelReconnect())
+  handleArg<SessionId, ReturnType<PorticoController['getConnectionState']>>(
+    IPC.CONN_STATE,
+    (id) => c.getConnectionState(id)
+  )
+  handleArg<SessionId, Result<true>>(IPC.CANCEL_RECONNECT, (id) => c.cancelReconnect(id))
 
   // Port forwarding
-  handleArg<{ localPort: number; remoteHost: string; remotePort: number }, Result<PortForwardRule>>(
-    IPC.PF_ADD, (rule) => c.addPortForward(rule)
+  handleArg<
+    { sessionId: SessionId; localPort: number; remoteHost: string; remotePort: number },
+    Result<PortForwardRule>
+  >(IPC.PF_ADD, (a) =>
+    c.addPortForward(a.sessionId, {
+      localPort: a.localPort,
+      remoteHost: a.remoteHost,
+      remotePort: a.remotePort
+    })
   )
-  handleArg<string, Result<true>>(IPC.PF_REMOVE, (id) => c.removePortForward(id))
-  handle(IPC.PF_LIST, () => c.listPortForwards())
+  handleArg<{ sessionId: SessionId; id: string }, Result<true>>(IPC.PF_REMOVE, (a) =>
+    c.removePortForward(a.sessionId, a.id)
+  )
+  handleArg<SessionId, Result<PortForwardStatus[]>>(IPC.PF_LIST, (id) => c.listPortForwards(id))
 
   // App info & updates
   handle(IPC.GET_APP_INFO, getAppInfo)
@@ -442,10 +482,11 @@ function registerIpc(c: PorticoController): void {
     c.setTmuxPrefs(p)
   )
   handle(IPC.TMUX_GET_PREFS, () => c.getTmuxPrefs())
-  handle(IPC.TMUX_LIST, () => c.listTmuxSessions())
-  handleArg<TmuxEnterArgs | undefined, Result<{ action: string; session: string }>>(
-    IPC.TMUX_ENTER,
-    (a) => c.enterTmux(a)
+  handleArg<SessionId, ReturnType<PorticoController['listTmuxSessions']>>(IPC.TMUX_LIST, (id) =>
+    c.listTmuxSessions(id)
+  )
+  handleArg<TmuxEnterArgs, Result<{ action: string; session: string }>>(IPC.TMUX_ENTER, (a) =>
+    c.enterTmux(a)
   )
 }
 

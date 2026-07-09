@@ -8,16 +8,9 @@ import {
 } from '../lib/terminal-settings.js'
 import type { AppSettings } from '../lib/app-settings.js'
 import { DEFAULT_APP_SETTINGS, normalizeAppSettings } from '../lib/app-settings.js'
+import { useI18n, LOCALE_OPTIONS, type AppLocale } from '../i18n/index.js'
 
 export type SettingsSection = 'general' | 'terminal' | 'tmux' | 'image' | 'about'
-
-const SECTIONS: { id: SettingsSection; label: string; hint: string }[] = [
-  { id: 'general', label: 'General', hint: 'App behavior' },
-  { id: 'terminal', label: 'Terminal', hint: 'Theme, font, WebGL' },
-  { id: 'tmux', label: 'tmux', hint: 'Remote session reuse' },
-  { id: 'image', label: 'Image bridge', hint: 'Paste & upload' },
-  { id: 'about', label: 'About', hint: 'Version & updates' }
-]
 
 interface Props {
   open: boolean
@@ -51,12 +44,21 @@ export function SettingsCenter({
   onCheckUpdates,
   onInstallUpdate
 }: Props) {
+  const { t } = useI18n()
   const [localSection, setLocalSection] = useState<SettingsSection>('general')
   const section = controlledSection ?? localSection
   const setSection = (s: SettingsSection) => {
     onSectionChange?.(s)
     setLocalSection(s)
   }
+
+  const sections: { id: SettingsSection; label: string; hint: string }[] = [
+    { id: 'general', label: t('settings.nav.general'), hint: t('settings.nav.generalHint') },
+    { id: 'terminal', label: t('settings.nav.terminal'), hint: t('settings.nav.terminalHint') },
+    { id: 'tmux', label: t('settings.nav.tmux'), hint: t('settings.nav.tmuxHint') },
+    { id: 'image', label: t('settings.nav.image'), hint: t('settings.nav.imageHint') },
+    { id: 'about', label: t('settings.nav.about'), hint: t('settings.nav.aboutHint') }
+  ]
 
   useEffect(() => {
     if (!open) return
@@ -86,11 +88,11 @@ export function SettingsCenter({
         className="settings-center"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
-        aria-label="Settings"
+        aria-label={t('settings.title')}
       >
         <aside className="settings-nav">
-          <div className="settings-nav-title">Settings</div>
-          {SECTIONS.map((s) => (
+          <div className="settings-nav-title">{t('settings.title')}</div>
+          {sections.map((s) => (
             <button
               key={s.id}
               type="button"
@@ -105,7 +107,7 @@ export function SettingsCenter({
 
         <div className="settings-main">
           <header className="settings-main-header">
-            <h2>{SECTIONS.find((s) => s.id === section)?.label ?? 'Settings'}</h2>
+            <h2>{sections.find((s) => s.id === section)?.label ?? t('settings.title')}</h2>
             <button type="button" className="btn ghost settings-close" onClick={onClose} title="Close">
               ✕
             </button>
@@ -114,10 +116,23 @@ export function SettingsCenter({
           <div className="settings-body">
             {section === 'general' && (
               <section className="settings-section">
-                <p className="settings-lead">
-                  Stability and app behavior. Preferences are stored on this device and
-                  synced to the main process for L2 feature isolation.
-                </p>
+                <p className="settings-lead">{t('settings.general.lead')}</p>
+                <div className="settings-field">
+                  <span>{t('settings.general.language')}</span>
+                  <div className="locale-pills" role="group" aria-label={t('settings.general.language')}>
+                    {LOCALE_OPTIONS.map((o) => (
+                      <button
+                        key={o.id}
+                        type="button"
+                        className={appSettings.locale === o.id ? 'active' : ''}
+                        onClick={() => setApp('locale', o.id as AppLocale)}
+                      >
+                        {t(o.labelKey)}
+                      </button>
+                    ))}
+                  </div>
+                  <em className="settings-field-hint">{t('settings.general.languageHint')}</em>
+                </div>
                 <label className="settings-check">
                   <input
                     type="checkbox"
@@ -142,11 +157,8 @@ export function SettingsCenter({
                     }}
                   />
                   <span>
-                    Terminal only mode
-                    <em>
-                      Disable image bridge, port forwards, and provider auto-detect. SSH
-                      terminal stays fully functional.
-                    </em>
+                    {t('settings.general.terminalOnly')}
+                    <em>{t('settings.general.terminalOnlyHint')}</em>
                   </span>
                 </label>
                 <label className="settings-check">
@@ -156,8 +168,8 @@ export function SettingsCenter({
                     onChange={(e) => setApp('enableAutoUpdate', e.target.checked)}
                   />
                   <span>
-                    Automatic update checks
-                    <em>When off, Portico will not contact the update feed</em>
+                    {t('settings.general.autoUpdate')}
+                    <em>{t('settings.general.autoUpdateHint')}</em>
                   </span>
                 </label>
                 <label className="settings-check">
@@ -167,20 +179,20 @@ export function SettingsCenter({
                     onChange={(e) => setApp('confirmClearCache', e.target.checked)}
                   />
                   <span>
-                    Confirm before clearing remote image cache
-                    <em>Ask once before deleting ~/.portico*/blobs</em>
+                    {t('settings.general.confirmCache')}
+                    <em>{t('settings.general.confirmCacheHint')}</em>
                   </span>
                 </label>
                 {!appSettings.terminalOnly && (
                   <>
-                    <div className="settings-note">Optional L2 capabilities (safe to disable):</div>
+                    <div className="settings-note">{t('settings.general.l2Note')}</div>
                     <label className="settings-check">
                       <input
                         type="checkbox"
                         checked={appSettings.enableImageBridge}
                         onChange={(e) => setApp('enableImageBridge', e.target.checked)}
                       />
-                      <span>Image paste / upload bridge</span>
+                      <span>{t('settings.general.imageBridge')}</span>
                     </label>
                     <label className="settings-check">
                       <input
@@ -188,7 +200,7 @@ export function SettingsCenter({
                         checked={appSettings.enablePortForwards}
                         onChange={(e) => setApp('enablePortForwards', e.target.checked)}
                       />
-                      <span>Port forwarding</span>
+                      <span>{t('settings.general.portForwards')}</span>
                     </label>
                     <label className="settings-check">
                       <input
@@ -196,7 +208,7 @@ export function SettingsCenter({
                         checked={appSettings.enableProviderDetect}
                         onChange={(e) => setApp('enableProviderDetect', e.target.checked)}
                       />
-                      <span>Auto-detect Claude / Codex from output</span>
+                      <span>{t('settings.general.providerDetect')}</span>
                     </label>
                   </>
                 )}
@@ -209,7 +221,7 @@ export function SettingsCenter({
                       onTermChange({ ...DEFAULT_TERM })
                     }}
                   >
-                    Reset all settings
+                    {t('common.resetAll')}
                   </button>
                 </div>
               </section>
@@ -217,12 +229,10 @@ export function SettingsCenter({
 
             {section === 'terminal' && (
               <section className="settings-section">
-                <p className="settings-lead">
-                  Appearance and rendering for the SSH terminal session.
-                </p>
+                <p className="settings-lead">{t('settings.terminal.lead')}</p>
 
                 <label className="settings-field">
-                  <span>Theme</span>
+                  <span>{t('settings.terminal.theme')}</span>
                   <select
                     value={termSettings.themeId}
                     onChange={(e) => setTerm('themeId', e.target.value as TermThemeId)}
@@ -236,7 +246,7 @@ export function SettingsCenter({
                 </label>
 
                 <label className="settings-field">
-                  <span>Font</span>
+                  <span>{t('settings.terminal.font')}</span>
                   <select
                     value={
                       FONT_PRESETS.find((p) => p.value === termSettings.fontFamily)?.id ?? 'custom'
@@ -258,7 +268,7 @@ export function SettingsCenter({
                 </label>
 
                 <label className="settings-field">
-                  <span>Font size ({termSettings.fontSize}px)</span>
+                  <span>{t('settings.terminal.fontSize', { n: termSettings.fontSize })}</span>
                   <input
                     type="range"
                     min={10}
@@ -270,7 +280,7 @@ export function SettingsCenter({
                 </label>
 
                 <label className="settings-field">
-                  <span>Line height ({termSettings.lineHeight.toFixed(1)})</span>
+                  <span>{t('settings.terminal.lineHeight', { n: termSettings.lineHeight.toFixed(1) })}</span>
                   <input
                     type="range"
                     min={1}
@@ -282,7 +292,7 @@ export function SettingsCenter({
                 </label>
 
                 <label className="settings-field">
-                  <span>Scrollback lines</span>
+                  <span>{t('settings.terminal.scrollback')}</span>
                   <input
                     type="number"
                     min={1000}
@@ -300,8 +310,8 @@ export function SettingsCenter({
                     onChange={(e) => setTerm('copyOnSelect', e.target.checked)}
                   />
                   <span>
-                    Copy on select
-                    <em>Automatically copy selected text to the clipboard</em>
+                    {t('settings.terminal.copyOnSelect')}
+                    <em>{t('settings.terminal.copyOnSelectHint')}</em>
                   </span>
                 </label>
 
@@ -312,8 +322,8 @@ export function SettingsCenter({
                     onChange={(e) => setTerm('webgl', e.target.checked)}
                   />
                   <span>
-                    WebGL renderer
-                    <em>Faster full-screen TUI; reconnect if the GPU context is lost</em>
+                    {t('settings.terminal.webgl')}
+                    <em>{t('settings.terminal.webglHint')}</em>
                   </span>
                 </label>
 
@@ -323,7 +333,7 @@ export function SettingsCenter({
                     className="btn ghost"
                     onClick={() => onTermChange({ ...DEFAULT_TERM })}
                   >
-                    Reset terminal defaults
+                    {t('settings.terminal.reset')}
                   </button>
                 </div>
               </section>
@@ -331,13 +341,22 @@ export function SettingsCenter({
 
             {section === 'tmux' && (
               <section className="settings-section">
-                <p className="settings-lead">
-                  Reuse remote sessions with tmux so SSH disconnects do not kill Claude or long jobs.
-                  Portico only shells out to the remote <code>tmux</code> CLI — it does not replace tmux.
-                </p>
+                <p className="settings-lead">{t('settings.tmux.lead')}</p>
+
+                <label className="settings-check">
+                  <input
+                    type="checkbox"
+                    checked={appSettings.syncRemoteClipboard}
+                    onChange={(e) => setApp('syncRemoteClipboard', e.target.checked)}
+                  />
+                  <span>
+                    {t('settings.tmux.syncClipboard')}
+                    <em>{t('settings.tmux.syncClipboardHint')}</em>
+                  </span>
+                </label>
 
                 <label className="settings-field">
-                  <span>After connect</span>
+                  <span>{t('settings.tmux.afterConnect')}</span>
                   <select
                     value={appSettings.tmuxMode}
                     onChange={(e) =>
@@ -347,16 +366,14 @@ export function SettingsCenter({
                       )
                     }
                   >
-                    <option value="off">Off — plain shell</option>
-                    <option value="attach-if-exists">
-                      Attach if session exists
-                    </option>
-                    <option value="always">Always attach or create</option>
+                    <option value="off">{t('settings.tmux.modeOff')}</option>
+                    <option value="attach-if-exists">{t('settings.tmux.modeAttach')}</option>
+                    <option value="always">{t('settings.tmux.modeAlways')}</option>
                   </select>
                 </label>
 
                 <label className="settings-field">
-                  <span>Default session name</span>
+                  <span>{t('settings.tmux.sessionName')}</span>
                   <input
                     type="text"
                     value={appSettings.tmuxSessionName}
@@ -367,20 +384,12 @@ export function SettingsCenter({
                 </label>
 
                 <div className="settings-note">
-                  <strong>Tips</strong>
+                  <strong>{t('settings.tmux.tips')}</strong>
                   <ul className="settings-list">
-                    <li>
-                      Detach with tmux prefix (usually <kbd>Ctrl-b</kbd> then <kbd>d</kbd>) — Portico
-                      shortcuts use ⌘ and never steal the prefix.
-                    </li>
-                    <li>
-                      After reconnect, auto-enter runs again so you land back in the same session when
-                      mode is not Off.
-                    </li>
-                    <li>
-                      Command palette: list sessions, attach, or create new. Requires tmux on the remote
-                      PATH.
-                    </li>
+                    <li>{t('settings.tmux.tipDetach')}</li>
+                    <li>{t('settings.tmux.tipReconnect')}</li>
+                    <li>{t('settings.tmux.tipPalette')}</li>
+                    <li>{t('settings.tmux.tipBuffer')}</li>
                   </ul>
                 </div>
               </section>
@@ -388,17 +397,15 @@ export function SettingsCenter({
 
             {section === 'image' && (
               <section className="settings-section">
-                <p className="settings-lead">
-                  How clipboard and file images are uploaded and injected into the remote AI.
-                </p>
+                <p className="settings-lead">{t('settings.image.lead')}</p>
 
                 <label className="settings-field">
-                  <span>Default paste prompt</span>
+                  <span>{t('settings.image.defaultPrompt')}</span>
                   <input
                     type="text"
                     value={appSettings.defaultPastePrompt}
                     onChange={(e) => setApp('defaultPastePrompt', e.target.value)}
-                    placeholder="Analyze this image"
+                    placeholder={t('paste.defaultPrompt')}
                     spellCheck={false}
                   />
                 </label>
@@ -410,15 +417,12 @@ export function SettingsCenter({
                     onChange={(e) => setApp('skipPastePrompt', e.target.checked)}
                   />
                   <span>
-                    Skip prompt dialog on paste
-                    <em>⌘⇧V uploads immediately with the default prompt</em>
+                    {t('settings.image.skipDialog')}
+                    <em>{t('settings.image.skipDialogHint')}</em>
                   </span>
                 </label>
 
-                <div className="settings-note">
-                  Images are uploaded to <code>~/.portico*/blobs</code> on the remote host, then a
-                  path reference is injected into the terminal for Claude / Codex / shell.
-                </div>
+                <div className="settings-note">{t('settings.image.note')}</div>
               </section>
             )}
 
@@ -434,15 +438,15 @@ export function SettingsCenter({
                     <span>Update feed: {appInfo?.updateChannel ?? '—'}</span>
                   </div>
                   {appInfo?.isPackaged === false && (
-                    <div className="settings-note">Running in development (updates disabled).</div>
+                    <div className="settings-note">{t('settings.about.dev')}</div>
                   )}
                 </div>
 
                 <div className="settings-field">
-                  <span>Updates</span>
+                  <span>{t('settings.about.updates')}</span>
                   <div className="settings-about-update">
                     <span className="settings-update-state">
-                      {formatUpdateStatus(updateStatus)}
+                      {formatUpdateStatus(updateStatus, t)}
                     </span>
                     <button
                       type="button"
@@ -452,22 +456,20 @@ export function SettingsCenter({
                         updateStatus?.state === 'checking' || updateStatus?.state === 'downloading'
                       }
                     >
-                      Check for updates
+                      {t('settings.about.check')}
                     </button>
                     {updateStatus?.state === 'downloaded' && (
                       <button type="button" className="btn primary" onClick={onInstallUpdate}>
-                        Restart to install
+                        {t('settings.about.install')}
                       </button>
                     )}
                   </div>
                 </div>
 
                 <div className="settings-note">
-                  Keyboard: <kbd>⌘V</kbd> text paste · <kbd>⌘⇧V</kbd> image bridge ·{' '}
-                  <kbd>⌘,</kbd> settings · <kbd>⌘⇧P</kbd> palette · <kbd>⌘F</kbd> find
+                  {t('settings.about.keyboard')}
                   <br />
-                  Recommended flow: Portico SSH → tmux session → Claude. Disconnect only drops SSH;
-                  tmux keeps remote work alive.
+                  {t('settings.about.workflow')}
                 </div>
               </section>
             )}
@@ -475,7 +477,7 @@ export function SettingsCenter({
 
           <footer className="settings-footer">
             <button type="button" className="btn primary" onClick={onClose}>
-              Done
+              {t('common.done')}
             </button>
           </footer>
         </div>
@@ -484,23 +486,26 @@ export function SettingsCenter({
   )
 }
 
-function formatUpdateStatus(s: UpdateStatus | null): string {
-  if (!s) return 'Idle'
+function formatUpdateStatus(
+  s: UpdateStatus | null,
+  t: (key: import('../i18n/index.js').MessageKey, vars?: Record<string, string | number>) => string
+): string {
+  if (!s) return t('update.idle')
   switch (s.state) {
     case 'idle':
-      return 'Idle'
+      return t('update.idle')
     case 'checking':
-      return 'Checking…'
+      return t('update.checking')
     case 'available':
-      return s.version ? `Update ${s.version} available` : 'Update available'
+      return s.version ? `${t('update.available')} ${s.version}` : t('update.available')
     case 'downloading':
-      return s.percent != null ? `Downloading… ${Math.round(s.percent)}%` : 'Downloading…'
+      return s.percent != null ? `${t('update.downloading')} ${Math.round(s.percent)}%` : t('update.downloading')
     case 'downloaded':
-      return s.version ? `${s.version} ready to install` : 'Update ready'
+      return s.version ? `${s.version} — ${t('update.ready')}` : t('update.ready')
     case 'not-available':
-      return s.message ?? 'Up to date'
+      return s.message ?? t('update.upToDate')
     case 'error':
-      return s.message ?? 'Update error'
+      return s.message ?? t('update.error')
     default:
       return s.state
   }

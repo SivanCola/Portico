@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction
+} from 'react'
 import type {
   AppInfo,
   ConnectPhase,
@@ -6,6 +14,8 @@ import type {
   PortForwardStatus,
   ProviderId,
   ProviderSession,
+  SessionId,
+  SessionSummary,
   ShelfItem,
   SshTarget,
   UpdateStatus
@@ -15,6 +25,7 @@ import { ConnectionForm } from './components/ConnectionForm.js'
 import { Terminal } from './components/Terminal.js'
 import { ImageShelf } from './components/ImageShelf.js'
 import { PortForwards } from './components/PortForwards.js'
+import { SessionRail } from './components/SessionRail.js'
 import { CommandPalette, type PaletteAction } from './components/CommandPalette.js'
 import { PastePromptDialog } from './components/PastePromptDialog.js'
 import { SettingsCenter, type SettingsSection } from './components/SettingsCenter.js'
@@ -31,18 +42,58 @@ import {
   toTmuxPrefs,
   type AppSettings
 } from './lib/app-settings.js'
+import { I18nProvider, useI18n } from './i18n/index.js'
 
 type ConnInfo = { user: string; host: string; alias?: string } | null
 type PromptMode = { kind: 'clipboard' } | { kind: 'file'; path: string } | null
 
+interface SessionUi {
+  connState: ConnectionState
+  connectPhase: ConnectPhase | null
+  connInfo: ConnInfo
+  reconnectInfo: { attempt: number; nextRetryIn?: number } | null
+  provider: ProviderSession | null
+  shelf: ShelfItem[]
+  portForwards: PortForwardStatus[]
+  /** True once the session has been connected at least once (mount Terminal). */
+  everLive: boolean
+}
+
+function emptyUi(partial?: Partial<SessionUi>): SessionUi {
+  return {
+    connState: 'disconnected',
+    connectPhase: null,
+    connInfo: null,
+    reconnectInfo: null,
+    provider: null,
+    shelf: [],
+    portForwards: [],
+    everLive: false,
+    ...partial
+  }
+}
+
+/** Root: load locale preference then provide i18n to the tree. */
 export function App() {
-  const [connState, setConnState] = useState<ConnectionState>('disconnected')
-  const [connectPhase, setConnectPhase] = useState<ConnectPhase | null>(null)
-  const [connInfo, setConnInfo] = useState<ConnInfo>(null)
-  const [reconnectInfo, setReconnectInfo] = useState<{ attempt: number; nextRetryIn?: number } | null>(null)
-  const [session, setSession] = useState<ProviderSession | null>(null)
-  const [shelf, setShelf] = useState<ShelfItem[]>([])
-  const [portForwards, setPortForwards] = useState<PortForwardStatus[]>([])
+  const [appSettings, setAppSettings] = useState<AppSettings>(() => loadAppSettings())
+  return (
+    <I18nProvider localePref={appSettings.locale}>
+      <AppInner appSettings={appSettings} setAppSettings={setAppSettings} />
+    </I18nProvider>
+  )
+}
+
+function AppInner({
+  appSettings,
+  setAppSettings
+}: {
+  appSettings: AppSettings
+  setAppSettings: Dispatch<SetStateAction<AppSettings>>
+}) {
+  const { t } = useI18n()
+  const [sessionList, setSessionList] = useState<SessionSummary[]>([])
+  const [activeSessionId, setActiveSessionId] = useState<SessionId | null>(null)
+  const [byId, setById] = useState<Record<SessionId, SessionUi>>({})
   const [status, setStatus] = useState<StatusPayload | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
@@ -50,10 +101,49 @@ export function App() {
   const [promptMode, setPromptMode] = useState<PromptMode>(null)
   const [dragOver, setDragOver] = useState(false)
   const [termSettings, setTermSettings] = useState<TerminalSettings>(() => loadTerminalSettings())
-  const [appSettings, setAppSettings] = useState<AppSettings>(() => loadAppSettings())
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general')
   const statusTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const activeRef = useRef<SessionId | null>(null)
+  activeRef.current = activeSessionId
+
+  const activeUi = activeSessionId ? byId[activeSessionId] : undefined
+  const connState = activeUi?.connState ?? 'disconnected'
+  const connectPhase = activeUi?.connectPhase ?? null
+  const connInfo = activeUi?.connInfo ?? null
+  const reconnectInfo = activeUi?.reconnectInfo ?? null
+  const session = activeUi?.provider ?? null
+  const shelf = activeUi?.shelf ?? []
+  const portForwards = activeUi?.portForwards ?? []
+
+  const patchUi = useCallback((id: SessionId, patch: Partial<SessionUi> | ((prev: SessionUi) => SessionUi)) => {
+    setById((prev) => {
+      const cur = prev[id] ?? emptyUi()
+      const next = typeof patch === 'function' ? patch(cur) : { ...cur, ...patch }
+      return { ...prev, [id]: next }
+    })
+  }, [])
+
+  const markUnread = useCallback((id: SessionId) => {
+    if (id === activeRef.current) return
+    setSessionList((list) =>
+      list.map((s) => (s.id === id && !s.unread ? { ...s, unread: true } : s))
+    )
+  }, [])
+
+  const clearUnread = useCallback((id: SessionId) => {
+    setSessionList((list) =>
+      list.map((s) => (s.id === id && s.unread ? { ...s, unread: false } : s))
+    )
+  }, [])
+
+  const selectSession = useCallback(
+    (id: SessionId) => {
+      setActiveSessionId(id)
+      clearUnread(id)
+    },
+    [clearUnread]
+  )
 
   const updateTermSettings = useCallback((next: TerminalSettings) => {
     setTermSettings(next)
@@ -76,10 +166,9 @@ export function App() {
       saveAppSettings(normalized)
       void syncMainPrefs(normalized)
     },
-    [syncMainPrefs]
+    [syncMainPrefs, setAppSettings]
   )
 
-  // Push flags + tmux prefs once on mount so main matches saved settings.
   useEffect(() => {
     void syncMainPrefs(loadAppSettings())
   }, [syncMainPrefs])
@@ -89,9 +178,9 @@ export function App() {
     setSettingsOpen(true)
   }, [])
 
-  const isActive = connState === 'connected' || connState === 'connecting' || connState === 'reconnecting'
+  const isActive =
+    connState === 'connected' || connState === 'connecting' || connState === 'reconnecting'
 
-  // ---- status banner with optional auto-dismiss ---------------------------
   const pushStatus = useCallback((s: StatusPayload) => {
     setStatus(s)
     if (statusTimer.current) clearTimeout(statusTimer.current)
@@ -102,7 +191,6 @@ export function App() {
 
   useEffect(() => window.portico.onStatus(pushStatus), [pushStatus])
 
-  // ---- app identity (name + version for the top bar / beta badge) --------
   useEffect(() => {
     window.portico
       .getAppInfo()
@@ -112,144 +200,230 @@ export function App() {
       .catch(() => {})
   }, [])
 
-  // ---- live auto-update status from main ----------------------------------
   useEffect(() => window.portico.onUpdateStatus(setUpdateStatus), [])
 
-  // ---- live provider session from main (auto-detect / setProvider) --------
-  useEffect(() => window.portico.onSessionChanged(setSession), [])
-
-  // ---- refresh the provider session whenever connection changes -----------
-  const refreshSession = useCallback(async () => {
-    const r = await window.portico.getSession()
-    if (r.ok) setSession(r.value)
-  }, [])
-
-  // ---- resync with main on mount (e.g. after a renderer reload) -----------
+  // ---- bootstrap session list --------------------------------------------
   useEffect(() => {
-    window.portico
-      .getConnectionState()
-      .then((r) => {
-        if (!r.ok || r.value.state === 'disconnected') return
-        setConnState(r.value.state)
-        if (r.value.user && r.value.host) {
-          setConnInfo({ user: r.value.user, host: r.value.host, alias: r.value.alias })
+    void window.portico.listSessions().then((r) => {
+      if (!r.ok || r.value.length === 0) return
+      setSessionList(r.value.map((s) => ({ ...s, unread: false })))
+      setActiveSessionId((cur) => cur ?? r.value[0].id)
+      setById((prev) => {
+        const next = { ...prev }
+        for (const s of r.value) {
+          if (!next[s.id]) next[s.id] = emptyUi({ connState: s.state, provider: { provider: s.provider, interactive: true, nativePasteAvailable: false } })
         }
-        void refreshSession()
-        window.portico.listPortForwards().then((pf) => {
-          if (pf.ok) setPortForwards(pf.value)
-        })
-      })
-      .catch(() => {})
-  }, [refreshSession])
-
-  // ---- connection state from main -----------------------------------------
-  useEffect(() => {
-    return window.portico.onConnectionState((payload: ConnStatePayload) => {
-      setConnState(payload.state)
-      if (payload.state === 'connecting') {
-        setConnectPhase(payload.phase ?? 'resolving')
-      } else {
-        setConnectPhase(null)
-      }
-      if (payload.state === 'reconnecting') {
-        setReconnectInfo({ attempt: payload.attempt!, nextRetryIn: payload.nextRetryIn })
-      } else {
-        setReconnectInfo(null)
-      }
-      if (payload.state === 'disconnected') {
-        setConnInfo(null)
-        setSession(null)
-      }
-    })
-  }, [])
-
-  // ---- live countdown while waiting for the next reconnect attempt --------
-  useEffect(() => {
-    if (connState !== 'reconnecting') return
-    const t = setInterval(() => {
-      setReconnectInfo((info) =>
-        info && info.nextRetryIn != null && info.nextRetryIn > 0
-          ? { ...info, nextRetryIn: info.nextRetryIn - 1 }
-          : info
-      )
-    }, 1000)
-    return () => clearInterval(t)
-  }, [connState])
-
-  // ---- port forward updates -----------------------------------------------
-  useEffect(() => {
-    return window.portico.onPortForwardChanged(setPortForwards)
-  }, [])
-
-  // ---- shelf: live updates from main --------------------------------------
-  useEffect(() => {
-    const off = window.portico.onShelfItemUpdated((item) => {
-      setShelf((prev) => {
-        const idx = prev.findIndex((i) => i.id === item.id)
-        if (idx === -1) return [item, ...prev]
-        const next = [...prev]
-        next[idx] = { ...next[idx], ...item }
         return next
       })
     })
-    window.portico
-      .shelfList()
-      .then((r) => {
-        if (r.ok) setShelf(r.value)
-      })
-      .catch(() => {})
-    return off
   }, [])
 
-  // ---- connect / disconnect -----------------------------------------------
+  useEffect(() => {
+    return window.portico.onSessionsChanged((sessions) => {
+      setSessionList((prev) => {
+        const unreadMap = new Map(prev.map((s) => [s.id, s.unread]))
+        return sessions.map((s) => ({ ...s, unread: unreadMap.get(s.id) ?? false }))
+      })
+      setById((prev) => {
+        const next = { ...prev }
+        for (const s of sessions) {
+          if (!next[s.id]) next[s.id] = emptyUi({ connState: s.state })
+        }
+        // Drop closed sessions from local UI cache (keep everLive terminals cleaned)
+        for (const id of Object.keys(next)) {
+          if (!sessions.some((s) => s.id === id)) delete next[id]
+        }
+        return next
+      })
+      setActiveSessionId((cur) => {
+        if (cur && sessions.some((s) => s.id === cur)) return cur
+        return sessions[0]?.id ?? null
+      })
+    })
+  }, [])
+
+  useEffect(() => {
+    return window.portico.onSessionChanged((payload) => {
+      patchUi(payload.sessionId, { provider: payload.session })
+    })
+  }, [patchUi])
+
+  useEffect(() => {
+    return window.portico.onConnectionState((payload: ConnStatePayload) => {
+      const { sessionId } = payload
+      patchUi(sessionId, (cur) => {
+        const next = { ...cur, connState: payload.state }
+        if (payload.state === 'connecting') {
+          next.connectPhase = payload.phase ?? 'resolving'
+        } else {
+          next.connectPhase = null
+        }
+        if (payload.state === 'reconnecting') {
+          next.reconnectInfo = {
+            attempt: payload.attempt ?? 1,
+            nextRetryIn: payload.nextRetryIn
+          }
+        } else {
+          next.reconnectInfo = null
+        }
+        if (payload.state === 'connected' || payload.state === 'reconnecting' || payload.state === 'connecting') {
+          next.everLive = true
+          if (payload.user && payload.host) {
+            next.connInfo = { user: payload.user, host: payload.host, alias: payload.alias }
+          }
+        }
+        if (payload.state === 'disconnected') {
+          next.connInfo = null
+          next.provider = null
+          next.portForwards = []
+          // Keep shelf / everLive so Terminal can unmount only after closeSession
+        }
+        return next
+      })
+      // Refresh list titles/state from main
+      void window.portico.listSessions().then((r) => {
+        if (!r.ok) return
+        setSessionList((prev) => {
+          const unreadMap = new Map(prev.map((s) => [s.id, s.unread]))
+          return r.value.map((s) => ({ ...s, unread: unreadMap.get(s.id) ?? false }))
+        })
+      })
+    })
+  }, [patchUi])
+
+  // Mark unread on background terminal output
+  useEffect(() => {
+    return window.portico.onOutput((payload) => {
+      markUnread(payload.sessionId)
+    })
+  }, [markUnread])
+
+  useEffect(() => {
+    if (connState !== 'reconnecting' || !activeSessionId) return
+    const t = setInterval(() => {
+      patchUi(activeSessionId, (cur) => {
+        if (!cur.reconnectInfo || cur.reconnectInfo.nextRetryIn == null) return cur
+        if (cur.reconnectInfo.nextRetryIn <= 0) return cur
+        return {
+          ...cur,
+          reconnectInfo: {
+            ...cur.reconnectInfo,
+            nextRetryIn: cur.reconnectInfo.nextRetryIn - 1
+          }
+        }
+      })
+    }, 1000)
+    return () => clearInterval(t)
+  }, [connState, activeSessionId, patchUi])
+
+  useEffect(() => {
+    return window.portico.onPortForwardChanged((payload) => {
+      patchUi(payload.sessionId, { portForwards: payload.forwards })
+    })
+  }, [patchUi])
+
+  useEffect(() => {
+    return window.portico.onShelfItemUpdated((payload) => {
+      patchUi(payload.sessionId, (cur) => {
+        const idx = cur.shelf.findIndex((i) => i.id === payload.item.id)
+        if (idx === -1) return { ...cur, shelf: [payload.item, ...cur.shelf] }
+        const shelfNext = [...cur.shelf]
+        shelfNext[idx] = { ...shelfNext[idx], ...payload.item }
+        return { ...cur, shelf: shelfNext }
+      })
+    })
+  }, [patchUi])
+
+  // ---- session actions ---------------------------------------------------
+  const createSession = useCallback(async () => {
+    const r = await window.portico.createSession()
+    if (!r.ok) {
+      pushStatus({ level: 'warn', message: r.error.message, ttlMs: 5000 })
+      return
+    }
+    selectSession(r.value.id)
+  }, [pushStatus, selectSession])
+
+  const closeSession = useCallback(
+    async (id: SessionId) => {
+      const r = await window.portico.closeSession(id)
+      if (!r.ok) {
+        pushStatus({ level: 'error', message: r.error.message, ttlMs: 5000 })
+      }
+    },
+    [pushStatus]
+  )
+
+  const renameSession = useCallback(
+    async (id: SessionId, title: string) => {
+      const r = await window.portico.renameSession(id, title)
+      if (!r.ok) pushStatus({ level: 'warn', message: r.error.message, ttlMs: 4000 })
+    },
+    [pushStatus]
+  )
+
   const connect = useCallback(
-    async (t: SshTarget): Promise<string | null> => {
-      const r = await window.portico.connect(t)
+    async (target: SshTarget): Promise<string | null> => {
+      if (!activeSessionId) return 'No active session'
+      const r = await window.portico.connect(activeSessionId, target)
       if (!r.ok) return r.error.message
-      setConnInfo({ user: t.user, host: t.host, alias: t.alias })
-      await refreshSession()
-      const sl = await window.portico.shelfList()
-      if (sl.ok) setShelf(sl.value)
+      patchUi(activeSessionId, {
+        connInfo: { user: target.user, host: target.host, alias: target.alias },
+        everLive: true
+      })
+      const sl = await window.portico.shelfList(activeSessionId)
+      if (sl.ok) patchUi(activeSessionId, { shelf: sl.value })
+      const pr = await window.portico.getSession(activeSessionId)
+      if (pr.ok) patchUi(activeSessionId, { provider: pr.value })
       return null
     },
-    [refreshSession]
+    [activeSessionId, patchUi]
   )
 
   const disconnect = useCallback(async () => {
-    await window.portico.disconnect()
-    setConnInfo(null)
-    setConnState('disconnected')
-    setSession(null)
-    setPortForwards([])
-  }, [])
+    if (!activeSessionId) return
+    await window.portico.disconnect(activeSessionId)
+    patchUi(activeSessionId, {
+      connInfo: null,
+      connState: 'disconnected',
+      provider: null,
+      portForwards: [],
+      everLive: false
+    })
+  }, [activeSessionId, patchUi])
 
   const cancelReconnect = useCallback(async () => {
-    await window.portico.cancelReconnect()
-    setConnInfo(null)
-    setConnState('disconnected')
-    setSession(null)
-    setPortForwards([])
-  }, [])
+    if (!activeSessionId) return
+    await window.portico.cancelReconnect(activeSessionId)
+    patchUi(activeSessionId, {
+      connInfo: null,
+      connState: 'disconnected',
+      provider: null,
+      portForwards: [],
+      reconnectInfo: null,
+      everLive: false
+    })
+  }, [activeSessionId, patchUi])
 
-  // ---- provider switch -----------------------------------------------------
   const setProvider = useCallback(
     async (p: ProviderId) => {
-      const r = await window.portico.setProvider(p)
-      if (r.ok) setSession(r.value)
+      if (!activeSessionId) return
+      const r = await window.portico.setProvider(activeSessionId, p)
+      if (r.ok) patchUi(activeSessionId, { provider: r.value })
     },
-    []
+    [activeSessionId, patchUi]
   )
 
-  // ---- image actions -------------------------------------------------------
   const runUpload = useCallback(
     async (mode: PromptMode, prompt: string) => {
-      if (!mode) return
+      if (!mode || !activeSessionId) return
       if (mode.kind === 'clipboard') {
-        const r = await window.portico.pasteImage({ prompt })
+        const r = await window.portico.pasteImage({ sessionId: activeSessionId, prompt })
         if (!r.ok) pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
         else pushStatus({ level: 'info', message: `Pasted → ${r.value.remotePath}`, ttlMs: 4000 })
       } else {
         const r = await window.portico.uploadLocalImage({
+          sessionId: activeSessionId,
           path: mode.path,
           prompt,
           inject: true
@@ -258,34 +432,22 @@ export function App() {
         else pushStatus({ level: 'info', message: `Pasted → ${r.value.remotePath}`, ttlMs: 4000 })
       }
     },
-    [pushStatus]
+    [pushStatus, activeSessionId]
   )
 
   const openPastePrompt = useCallback(async () => {
     if (!appSettings.enableImageBridge) {
-      pushStatus({
-        level: 'warn',
-        message: 'Image bridge is disabled. Turn off Terminal only mode in Settings.',
-        ttlMs: 5000
-      })
+      pushStatus({ level: 'warn', message: t('status.imageBridgeOff'), ttlMs: 5000 })
       return
     }
-    if (connState !== 'connected') {
-      pushStatus({
-        level: 'warn',
-        message: 'Connect to a host before pasting an image.',
-        ttlMs: 4000
-      })
+    if (connState !== 'connected' || !activeSessionId) {
+      pushStatus({ level: 'warn', message: t('status.connectFirst'), ttlMs: 4000 })
       return
     }
     try {
       const has = await window.portico.clipboardHasImage()
       if (has.ok && !has.value) {
-        pushStatus({
-          level: 'warn',
-          message: 'No image in clipboard. Copy a screenshot or image first, then ⌘⇧V.',
-          ttlMs: 5000
-        })
+        pushStatus({ level: 'warn', message: t('status.noClipboardImage'), ttlMs: 5000 })
         return
       }
     } catch {
@@ -296,7 +458,7 @@ export function App() {
       return
     }
     setPromptMode({ kind: 'clipboard' })
-  }, [connState, pushStatus, appSettings, runUpload, appSettings.enableImageBridge])
+  }, [connState, pushStatus, appSettings, runUpload, t, activeSessionId])
 
   const runPasteWithPrompt = useCallback(
     async (prompt: string) => {
@@ -322,10 +484,11 @@ export function App() {
   )
 
   const uploadClipboard = useCallback(async () => {
-    const r = await window.portico.uploadClipboard()
+    if (!activeSessionId) return
+    const r = await window.portico.uploadClipboard(activeSessionId)
     if (!r.ok) pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
     else pushStatus({ level: 'info', message: `Uploaded to ${r.value.remotePath}`, ttlMs: 4000 })
-  }, [pushStatus])
+  }, [pushStatus, activeSessionId])
 
   const pickImageFile = useCallback(async () => {
     if (connState !== 'connected') return
@@ -336,26 +499,38 @@ export function App() {
 
   const repaste = useCallback(
     async (item: ShelfItem) => {
-      const r = await window.portico.pasteRemotePath(item.remotePath, item.prompt)
+      if (!activeSessionId) return
+      const r = await window.portico.pasteRemotePath(activeSessionId, item.remotePath, item.prompt)
       if (!r.ok) pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
     },
-    [pushStatus]
+    [pushStatus, activeSessionId]
   )
 
   const retryFailed = useCallback(
     (item: ShelfItem) => {
-      void window.portico.shelfRemove(item.id)
-      setShelf((prev) => prev.filter((i) => i.id !== item.id))
+      if (!activeSessionId) return
+      void window.portico.shelfRemove(activeSessionId, item.id)
+      patchUi(activeSessionId, (cur) => ({
+        ...cur,
+        shelf: cur.shelf.filter((i) => i.id !== item.id)
+      }))
       if (item.sourcePath) void beginFileUpload(item.sourcePath)
       else void pasteImage()
     },
-    [beginFileUpload, pasteImage]
+    [beginFileUpload, pasteImage, activeSessionId, patchUi]
   )
 
-  const removeShelfItem = useCallback(async (item: ShelfItem) => {
-    await window.portico.shelfRemove(item.id)
-    setShelf((prev) => prev.filter((i) => i.id !== item.id))
-  }, [])
+  const removeShelfItem = useCallback(
+    async (item: ShelfItem) => {
+      if (!activeSessionId) return
+      await window.portico.shelfRemove(activeSessionId, item.id)
+      patchUi(activeSessionId, (cur) => ({
+        ...cur,
+        shelf: cur.shelf.filter((i) => i.id !== item.id)
+      }))
+    },
+    [activeSessionId, patchUi]
+  )
 
   const copyPath = useCallback(
     async (item: ShelfItem) => {
@@ -370,11 +545,11 @@ export function App() {
   )
 
   const clearShelf = useCallback(async () => {
-    await window.portico.shelfClear()
-    setShelf([])
-  }, [])
+    if (!activeSessionId) return
+    await window.portico.shelfClear(activeSessionId)
+    patchUi(activeSessionId, { shelf: [] })
+  }, [activeSessionId, patchUi])
 
-  // ---- drag & drop images onto the workspace -----------------------------
   useEffect(() => {
     const onDragOver = (e: DragEvent) => {
       if (connState !== 'connected') return
@@ -389,13 +564,12 @@ export function App() {
       e.preventDefault()
       const file = e.dataTransfer?.files?.[0]
       if (!file || !file.type.startsWith('image/')) {
-        pushStatus({ level: 'warn', message: 'Drop an image file.', ttlMs: 3000 })
+        pushStatus({ level: 'warn', message: t('drop.warnImage'), ttlMs: 3000 })
         return
       }
-      // Electron File has a non-standard `.path` for local filesystem path.
       const path = (file as File & { path?: string }).path
       if (!path) {
-        pushStatus({ level: 'error', message: 'Could not resolve dropped file path.', ttlMs: 4000 })
+        pushStatus({ level: 'error', message: t('drop.pathError'), ttlMs: 4000 })
         return
       }
       void beginFileUpload(path)
@@ -408,7 +582,7 @@ export function App() {
       window.removeEventListener('dragleave', onDragLeave)
       window.removeEventListener('drop', onDrop)
     }
-  }, [connState, pushStatus, beginFileUpload])
+  }, [connState, pushStatus, beginFileUpload, t])
 
   const focusTerminal = useCallback(() => {
     document.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')?.focus()
@@ -420,23 +594,25 @@ export function App() {
   }, [focusTerminal])
 
   const clearRemoteCache = useCallback(async () => {
+    if (!activeSessionId) return
     if (appSettings.confirmClearCache) {
-      const ok = window.confirm(
-        'Delete every uploaded image blob on the remote host (~/.portico*/blobs)? This cannot be undone.'
-      )
+      const ok = window.confirm(t('status.clearCacheConfirm'))
       if (!ok) return
     }
-    const r = await window.portico.clearRemoteCache()
+    const r = await window.portico.clearRemoteCache(activeSessionId)
     if (r.ok) pushStatus({ level: 'info', message: `Cleared ${r.value.deleted} blob(s).`, ttlMs: 4000 })
     else pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
-  }, [pushStatus, appSettings.confirmClearCache])
+  }, [pushStatus, appSettings.confirmClearCache, t, activeSessionId])
 
-  // ---- auto-update actions -------------------------------------------------
   const checkForUpdates = useCallback(async () => {
     const r = await window.portico.checkForUpdates()
     if (!r.ok) pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
     else if (r.value.state === 'not-available') {
-      pushStatus({ level: 'info', message: r.value.message ?? 'You are on the latest version.', ttlMs: 4000 })
+      pushStatus({
+        level: 'info',
+        message: r.value.message ?? 'You are on the latest version.',
+        ttlMs: 4000
+      })
     }
   }, [pushStatus])
 
@@ -445,7 +621,18 @@ export function App() {
     if (!r.ok) pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
   }, [pushStatus])
 
-  // ---- global shortcuts: ⌘, settings · ⌘⇧P palette · paste from main ------
+  const switchSessionByOffset = useCallback(
+    (delta: number) => {
+      if (sessionList.length === 0) return
+      const idx = sessionList.findIndex((s) => s.id === activeSessionId)
+      const base = idx < 0 ? 0 : idx
+      const next = sessionList[(base + delta + sessionList.length) % sessionList.length]
+      if (next) selectSession(next.id)
+    },
+    [sessionList, activeSessionId, selectSession]
+  )
+
+  // Shortcuts: ⌘, settings · ⌘⇧P palette · ⌘⇧V paste · ⌘⇧[ / ] session switch
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const meta = e.metaKey || e.ctrlKey
@@ -453,7 +640,9 @@ export function App() {
       const isP = e.code === 'KeyP' || e.key.toLowerCase() === 'p'
       const isV = e.code === 'KeyV' || e.key.toLowerCase() === 'v'
       const isComma = e.code === 'Comma' || e.key === ','
-      // ⌘, — settings center (skip when typing in inputs handled by stop on dialog)
+      const isBracketLeft = e.code === 'BracketLeft' || e.key === '['
+      const isBracketRight = e.code === 'BracketRight' || e.key === ']'
+
       if (!e.shiftKey && isComma) {
         e.preventDefault()
         openSettings(settingsOpen ? settingsSection : 'general')
@@ -465,13 +654,18 @@ export function App() {
       } else if (e.shiftKey && isV) {
         e.preventDefault()
         void pasteImage()
+      } else if (e.shiftKey && isBracketLeft) {
+        e.preventDefault()
+        switchSessionByOffset(-1)
+      } else if (e.shiftKey && isBracketRight) {
+        e.preventDefault()
+        switchSessionByOffset(1)
       }
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [pasteImage, openSettings, settingsOpen, settingsSection])
+  }, [pasteImage, openSettings, settingsOpen, settingsSection, switchSessionByOffset])
 
-  // Main-process menu / before-input accelerators.
   useEffect(() => {
     return window.portico.onPasteImageShortcut(() => {
       void pasteImage()
@@ -486,80 +680,88 @@ export function App() {
     return window.portico.onOpenPalette(() => setPaletteOpen((o) => !o))
   }, [])
 
-  // ---- palette actions -----------------------------------------------------
   const actions = useMemo<PaletteAction[]>(
     () => [
       {
+        id: 'new-session',
+        title: t('palette.newSession'),
+        hint: t('palette.newSessionHint'),
+        enabled: true,
+        run: () => void createSession()
+      },
+      {
         id: 'paste-image',
-        title: 'Paste Image to Remote AI',
-        hint: 'Upload clipboard image + inject provider prompt  ·  ⌘⇧V',
+        title: t('palette.pasteImage'),
+        hint: t('palette.pasteImageHint'),
         enabled: connState === 'connected',
         run: pasteImage
       },
       {
         id: 'upload-clipboard',
-        title: 'Upload Clipboard Image',
-        hint: 'Upload without injecting into the terminal',
+        title: t('palette.uploadClipboard'),
+        hint: t('palette.uploadClipboardHint'),
         enabled: connState === 'connected',
         run: uploadClipboard
       },
       {
         id: 'upload-file',
-        title: 'Upload Image File…',
-        hint: 'Pick a local image and paste into the remote AI',
+        title: t('palette.uploadFile'),
+        hint: t('palette.uploadFileHint'),
         enabled: connState === 'connected',
         run: pickImageFile
       },
       {
         id: 'detect-provider',
-        title: 'Re-detect AI provider',
-        hint: 'Heuristically detect Claude / Codex / shell',
-        enabled: connState === 'connected',
+        title: t('palette.detectProvider'),
+        hint: t('palette.detectProviderHint'),
+        enabled: connState === 'connected' && !!activeSessionId,
         run: async () => {
-          const r = await window.portico.detectProvider()
+          if (!activeSessionId) return
+          const r = await window.portico.detectProvider(activeSessionId)
           if (!r.ok) {
             pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
             return
           }
-          // Main already applied detection and pushed SESSION_CHANGED.
           pushStatus({ level: 'info', message: `Provider set to ${r.value}`, ttlMs: 3000 })
         }
       },
       {
         id: 'clear-remote-cache',
-        title: 'Clear Remote Portico Cache',
-        hint: 'Delete every blob in ~/.portico/blobs',
+        title: t('palette.clearCache'),
+        hint: t('palette.clearCacheHint'),
         enabled: connState === 'connected',
         run: clearRemoteCache
       },
       {
         id: 'settings',
-        title: 'Settings…',
-        hint: 'General, terminal, image bridge, about  ·  ⌘,',
+        title: t('palette.settings'),
+        hint: t('palette.settingsHint'),
         enabled: true,
         run: () => openSettings('general')
       },
       {
         id: 'terminal-settings',
-        title: 'Terminal Settings…',
-        hint: 'Theme, font, WebGL, copy-on-select',
+        title: t('palette.terminalSettings'),
+        hint: t('palette.terminalSettingsHint'),
         enabled: true,
         run: () => openSettings('terminal')
       },
       {
         id: 'tmux-settings',
-        title: 'tmux Settings…',
-        hint: 'Auto-enter remote session after connect',
+        title: t('palette.tmuxSettings'),
+        hint: t('palette.tmuxSettingsHint'),
         enabled: true,
         run: () => openSettings('tmux')
       },
       {
         id: 'tmux-enter',
-        title: 'tmux: Enter default session',
-        hint: `Attach or create “${appSettings.tmuxSessionName}”`,
-        enabled: connState === 'connected',
+        title: t('palette.tmuxEnter'),
+        hint: t('palette.tmuxEnterHint', { name: appSettings.tmuxSessionName }),
+        enabled: connState === 'connected' && !!activeSessionId,
         run: async () => {
+          if (!activeSessionId) return
           const r = await window.portico.enterTmux({
+            sessionId: activeSessionId,
             mode: 'always',
             sessionName: appSettings.tmuxSessionName
           })
@@ -568,11 +770,12 @@ export function App() {
       },
       {
         id: 'tmux-list',
-        title: 'tmux: List sessions',
-        hint: 'Show remote tmux sessions in the status bar',
-        enabled: connState === 'connected',
+        title: t('palette.tmuxList'),
+        hint: t('palette.tmuxListHint'),
+        enabled: connState === 'connected' && !!activeSessionId,
         run: async () => {
-          const r = await window.portico.listTmuxSessions()
+          if (!activeSessionId) return
+          const r = await window.portico.listTmuxSessions(activeSessionId)
           if (!r.ok) {
             pushStatus({ level: 'warn', message: r.error.message, ttlMs: 5000 })
             return
@@ -589,34 +792,45 @@ export function App() {
       },
       {
         id: 'tmux-new',
-        title: 'tmux: New default session',
-        hint: `tmux new -s ${appSettings.tmuxSessionName}`,
-        enabled: connState === 'connected',
+        title: t('palette.tmuxNew'),
+        hint: t('palette.tmuxNewHint', { name: appSettings.tmuxSessionName }),
+        enabled: connState === 'connected' && !!activeSessionId,
         run: async () => {
-          const r = await window.portico.enterTmux({ createNew: appSettings.tmuxSessionName })
+          if (!activeSessionId) return
+          const r = await window.portico.enterTmux({
+            sessionId: activeSessionId,
+            createNew: appSettings.tmuxSessionName
+          })
           if (!r.ok) pushStatus({ level: 'warn', message: r.error.message, ttlMs: 5000 })
         }
       },
       {
         id: 'check-for-updates',
-        title: 'Check for Updates',
-        hint: 'Look for a new version on the update channel',
+        title: t('palette.checkUpdates'),
+        hint: t('palette.checkUpdatesHint'),
         enabled: updateStatus?.state !== 'checking' && updateStatus?.state !== 'downloading',
         run: checkForUpdates
       },
       {
         id: 'install-update',
-        title: 'Restart to Install Update',
-        hint: 'Quit and relaunch into the downloaded update',
+        title: t('palette.installUpdate'),
+        hint: t('palette.installUpdateHint'),
         enabled: updateStatus?.state === 'downloaded',
         run: installUpdate
       },
       {
         id: 'disconnect',
-        title: 'Disconnect',
+        title: t('palette.disconnect'),
         enabled: isActive,
         run: disconnect
-      }
+      },
+      ...sessionList.map((s) => ({
+        id: `switch-${s.id}`,
+        title: t('palette.switchSession', { title: s.title }),
+        hint: s.state,
+        enabled: s.id !== activeSessionId,
+        run: () => selectSession(s.id)
+      }))
     ],
     [
       connState,
@@ -632,9 +846,37 @@ export function App() {
       updateStatus?.state,
       openSettings,
       appSettings.tmuxSessionName,
-      pushStatus
+      t,
+      activeSessionId,
+      createSession,
+      sessionList,
+      selectSession
     ]
   )
+
+  // Sessions that need a kept-alive Terminal instance
+  const liveSessionIds = useMemo(
+    () =>
+      sessionList
+        .filter((s) => {
+          const ui = byId[s.id]
+          if (!ui) return false
+          return (
+            ui.everLive ||
+            ui.connState === 'connected' ||
+            ui.connState === 'reconnecting' ||
+            ui.connState === 'connecting'
+          )
+        })
+        .map((s) => s.id),
+    [sessionList, byId]
+  )
+
+  const showForm =
+    !activeSessionId ||
+    !activeUi ||
+    activeUi.connState === 'disconnected' ||
+    (activeUi.connState === 'connecting' && !activeUi.everLive)
 
   return (
     <div className={`app ${dragOver ? 'drag-over' : ''}`}>
@@ -649,65 +891,82 @@ export function App() {
         appInfo={appInfo}
       />
       <div className="workspace">
+        <SessionRail
+          sessions={sessionList}
+          activeId={activeSessionId}
+          onSelect={selectSession}
+          onCreate={() => void createSession()}
+          onClose={(id) => void closeSession(id)}
+          onRename={(id, title) => void renameSession(id, title)}
+        />
         <div className="terminal-pane">
-          {connState === 'disconnected' || connState === 'connecting' ? (
-            <ConnectionForm onConnect={connect} phase={connectPhase} />
-          ) : (
-            <>
-              {connState === 'reconnecting' && reconnectInfo && (
-                <div className="reconnect-banner">
-                  <span>
-                    Connection lost. Reconnecting (attempt {reconnectInfo.attempt}/10)
-                    {reconnectInfo.nextRetryIn != null && `... next retry in ${reconnectInfo.nextRetryIn}s`}
-                    {' · '}Paste image disabled until reconnected.
-                  </span>
-                  <button className="btn ghost" onClick={cancelReconnect}>Cancel</button>
-                </div>
-              )}
-              <div className="term-toolbar">
-                {appSettings.enableImageBridge && (
-                  <button
-                    type="button"
-                    className="btn ghost"
-                    style={{ fontSize: 12, padding: '2px 10px' }}
-                    disabled={connState !== 'connected'}
-                    onClick={() => void pasteImage()}
-                    title="Upload clipboard image and inject into the terminal  ·  ⌘⇧V"
-                  >
-                    <span className="kbd">⌘⇧V</span> Paste image
-                  </button>
-                )}
-                <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>
-                  {appSettings.terminalOnly
-                    ? 'Terminal only · ⌘F find'
-                    : connState === 'connected'
-                      ? 'or File… / drop · ⌘F find'
-                      : 'unavailable while reconnecting'}
-                </span>
-                <span style={{ flex: 1 }} />
-                <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>
-                  Provider:{' '}
-                  <strong style={{ textTransform: 'capitalize', color: 'var(--text)' }}>
-                    {session?.provider ?? 'shell'}
-                  </strong>
-                  {session?.provider !== 'shell' ? ' · interactive REPL' : ''}
-                </span>
+          {/* Form for draft / connecting first time — keep Terminals mounted underneath. */}
+          {showForm && <ConnectionForm onConnect={connect} phase={connectPhase} />}
+          {!showForm && connState === 'reconnecting' && reconnectInfo && (
+            <div className="reconnect-banner">
+              <span>
+                {t('reconnect.banner', { attempt: reconnectInfo.attempt })}
+                {reconnectInfo.nextRetryIn != null && `... ${reconnectInfo.nextRetryIn}s`}
+                {' · '}
+                {t('reconnect.pasteDisabled')}
+              </span>
+              <button className="btn ghost" onClick={cancelReconnect}>
+                {t('reconnect.cancel')}
+              </button>
+            </div>
+          )}
+          {!showForm && (
+            <div className="term-toolbar">
+              {appSettings.enableImageBridge && (
                 <button
                   type="button"
                   className="btn ghost"
                   style={{ fontSize: 12, padding: '2px 10px' }}
-                  onClick={() => openSettings('terminal')}
-                  title="Settings · Terminal  ·  ⌘,"
+                  disabled={connState !== 'connected'}
+                  onClick={() => void pasteImage()}
+                  title={t('palette.pasteImageHint')}
                 >
-                  Settings
+                  <span className="kbd">⌘⇧V</span> {t('toolbar.pasteImage')}
                 </button>
-              </div>
+              )}
+              <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>
+                {appSettings.terminalOnly
+                  ? t('toolbar.terminalOnlyFind')
+                  : connState === 'connected'
+                    ? t('toolbar.orFileDropFind')
+                    : t('toolbar.unavailableReconnect')}
+              </span>
+              <span style={{ flex: 1 }} />
+              <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>
+                {t('toolbar.provider')}{' '}
+                <strong style={{ textTransform: 'capitalize', color: 'var(--text)' }}>
+                  {session?.provider ?? 'shell'}
+                </strong>
+                {session?.provider !== 'shell' ? t('toolbar.interactiveRepl') : ''}
+              </span>
+              <button
+                type="button"
+                className="btn ghost"
+                style={{ fontSize: 12, padding: '2px 10px' }}
+                onClick={() => openSettings('terminal')}
+                title={t('topbar.settings')}
+              >
+                {t('common.settings')}
+              </button>
+            </div>
+          )}
+          {/* Always keep live terminals mounted so switching to a draft doesn't drop scrollback. */}
+          <div className="term-stack" style={showForm ? { display: 'none' } : undefined}>
+            {liveSessionIds.map((id) => (
               <Terminal
+                key={id}
+                sessionId={id}
+                active={!showForm && id === activeSessionId}
                 settings={termSettings}
                 onPasteImage={() => void pasteImage()}
               />
-            </>
-          )}
+            ))}
+          </div>
         </div>
         <div className="sidebar">
           {appSettings.enableImageBridge ? (
@@ -723,22 +982,28 @@ export function App() {
             />
           ) : (
             <div className="sidebar-disabled-note">
-              Image shelf off
+              {t('sidebar.imageOff')}
               <button type="button" className="btn ghost" onClick={() => openSettings('general')}>
-                Settings
+                {t('common.settings')}
               </button>
             </div>
           )}
-          {appSettings.enablePortForwards ? (
-            <PortForwards forwards={portForwards} enabled={connState === 'connected'} />
+          {appSettings.enablePortForwards && activeSessionId ? (
+            <PortForwards
+              sessionId={activeSessionId}
+              forwards={portForwards}
+              enabled={connState === 'connected'}
+            />
           ) : null}
         </div>
       </div>
 
-      {dragOver && <div className="drop-overlay">Drop image to upload</div>}
+      {dragOver && <div className="drop-overlay">{t('drop.overlay')}</div>}
       <PastePromptDialog
         open={!!promptMode}
-        title={promptMode?.kind === 'file' ? 'Upload image file' : 'Paste clipboard image'}
+        title={
+          promptMode?.kind === 'file' ? t('paste.titleFile') : t('paste.titleClipboard')
+        }
         initialPrompt={appSettings.defaultPastePrompt}
         onCancel={() => setPromptMode(null)}
         onConfirm={(p) => void runPasteWithPrompt(p)}
@@ -788,6 +1053,7 @@ function TopBar({
   onOpenSettings,
   appInfo
 }: TopBarProps) {
+  const { t } = useI18n()
   const dotClass =
     connState === 'connected'
       ? 'live'
@@ -797,7 +1063,8 @@ function TopBar({
           ? 'connecting'
           : ''
 
-  const isActive = connState === 'connected' || connState === 'connecting' || connState === 'reconnecting'
+  const isActive =
+    connState === 'connected' || connState === 'connecting' || connState === 'reconnecting'
   const isBeta = appInfo?.releaseChannel === 'beta'
   const displayName = appInfo?.name ?? 'Portico'
 
@@ -806,12 +1073,18 @@ function TopBar({
       <div className="brand">
         <span className={`dot ${dotClass}`} />
         {displayName}
-        {isBeta && <span className="beta-badge" title="Beta channel">Beta</span>}
+        {isBeta && (
+          <span className="beta-badge" title="Beta">
+            Beta
+          </span>
+        )}
         {appInfo?.version && (
-          <span className="version-label" title="App version">v{appInfo.version}</span>
+          <span className="version-label" title="version">
+            v{appInfo.version}
+          </span>
         )}
         {connState === 'reconnecting' && (
-          <span className="reconnect-label">Reconnecting...</span>
+          <span className="reconnect-label">{t('topbar.reconnecting')}</span>
         )}
       </div>
       {connInfo && (
@@ -821,7 +1094,7 @@ function TopBar({
       )}
       <div className="spacer" />
       {isActive && (
-        <div className="provider-pills" title="Target AI provider">
+        <div className="provider-pills" title={t('toolbar.provider')}>
           {(['claude', 'codex', 'shell'] as ProviderId[]).map((p) => (
             <button key={p} className={provider === p ? 'active' : ''} onClick={() => onProvider(p)}>
               {p}
@@ -829,15 +1102,15 @@ function TopBar({
           ))}
         </div>
       )}
-      <button className="btn ghost" onClick={onOpenSettings} title="Settings  ·  ⌘,">
-        Settings
+      <button className="btn ghost" onClick={onOpenSettings} title={t('topbar.settings')}>
+        {t('common.settings')}
       </button>
-      <button className="btn ghost" onClick={onOpenPalette} title="Command palette  ·  ⌘⇧P">
+      <button className="btn ghost" onClick={onOpenPalette} title={t('topbar.commandPalette')}>
         ⌘⇧P
       </button>
       {isActive && (
         <button className="btn danger" onClick={onDisconnect}>
-          Disconnect
+          {t('common.disconnect')}
         </button>
       )}
     </header>
@@ -849,11 +1122,6 @@ interface UpdateBannerProps {
   onInstall: () => void
 }
 
-/**
- * Non-blocking update status banner. Only the "downloaded" state is actionable;
- * the others surface progress so the user knows an update is in flight without
- * offering a premature install.
- */
 function UpdateBanner({ status, onInstall }: UpdateBannerProps) {
   let message: string
   switch (status.state) {
@@ -861,8 +1129,6 @@ function UpdateBanner({ status, onInstall }: UpdateBannerProps) {
       message = 'Checking for updates…'
       break
     case 'available':
-      // With autoDownload=true this is a brief transitional state before
-      // download-progress; avoid implying a stuck fake download.
       message = status.version
         ? `Update ${status.version} available — starting download…`
         : 'Update available — starting download…'
@@ -874,12 +1140,9 @@ function UpdateBanner({ status, onInstall }: UpdateBannerProps) {
           : 'Downloading update…'
       break
     case 'downloaded':
-      message = status.version
-        ? `Update ${status.version} is ready.`
-        : 'An update is ready.'
+      message = status.version ? `Update ${status.version} is ready.` : 'An update is ready.'
       break
     case 'not-available':
-      // Surfaced transiently via the status banner instead; nothing sticky here.
       return null
     case 'error':
       message = status.message ?? 'Update failed.'
@@ -892,11 +1155,15 @@ function UpdateBanner({ status, onInstall }: UpdateBannerProps) {
   const actionable = status.state === 'downloaded'
 
   return (
-    <div className={`update-banner ${actionable ? 'actionable' : status.state === 'error' ? 'error' : ''}`}>
+    <div
+      className={`update-banner ${actionable ? 'actionable' : status.state === 'error' ? 'error' : ''}`}
+    >
       <span>{message}</span>
       {actionable && (
         <span className="actions">
-          <button className="btn primary" onClick={onInstall}>Restart now</button>
+          <button className="btn primary" onClick={onInstall}>
+            Restart now
+          </button>
         </span>
       )}
     </div>

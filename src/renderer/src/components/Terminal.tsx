@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useI18n } from '../i18n/index.js'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
@@ -10,6 +11,9 @@ import { xtermTheme } from '../lib/terminal-settings.js'
 import { OutputBuffer } from '../lib/output-buffer.js'
 
 interface Props {
+  sessionId: string
+  /** When false, terminal stays mounted but hidden (preserve scrollback). */
+  active?: boolean
   settings: TerminalSettings
   /** Open the clipboard-image paste flow (parent owns the dialog). */
   onPasteImage?: () => void
@@ -18,17 +22,21 @@ interface Props {
 type CtxMenu = { x: number; y: number } | null
 
 /**
- * xterm.js wrapper for one connected SSH session.
+ * xterm.js wrapper for one connected SSH session (scoped by sessionId).
  *  - input/output + resize via window.portico
  *  - themes/fonts from settings
  *  - WebGL when enabled, search (⌘F), copy-on-select, context menu
+ *  - Keep mounted when inactive so scrollback survives tab switches
  */
-export function Terminal({ settings, onPasteImage }: Props) {
+export function Terminal({ sessionId, active = true, settings, onPasteImage }: Props) {
+  const { t } = useI18n()
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<XTerm | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
   const searchRef = useRef<SearchAddon | null>(null)
   const webglRef = useRef<WebglAddon | null>(null)
+  const sessionIdRef = useRef(sessionId)
+  sessionIdRef.current = sessionId
   const settingsRef = useRef(settings)
   settingsRef.current = settings
 
@@ -52,7 +60,7 @@ export function Terminal({ settings, onPasteImage }: Props) {
   const pasteText = useCallback(async () => {
     try {
       const text = await navigator.clipboard.readText()
-      if (text) window.portico.sendInput(text)
+      if (text) window.portico.sendInput(sessionIdRef.current, text)
     } catch {
       /* denied */
     }
@@ -144,7 +152,7 @@ export function Terminal({ settings, onPasteImage }: Props) {
       return true
     })
 
-    const inputDisp = term.onData((data) => window.portico.sendInput(data))
+    const inputDisp = term.onData((data) => window.portico.sendInput(sessionIdRef.current, data))
 
     // Coalesce bursty PTY output so large TUI redraws don't stall the UI thread.
     const outBuf = new OutputBuffer((data) => {
@@ -154,8 +162,13 @@ export function Terminal({ settings, onPasteImage }: Props) {
         /* xterm may be disposing */
       }
     })
-    const offOutput = window.portico.onOutput((data) => outBuf.push(data))
-    const onResize = term.onResize(({ cols, rows }) => window.portico.resize(cols, rows))
+    const offOutput = window.portico.onOutput((payload) => {
+      if (payload.sessionId !== sessionIdRef.current) return
+      outBuf.push(payload.data)
+    })
+    const onResize = term.onResize(({ cols, rows }) =>
+      window.portico.resize(sessionIdRef.current, cols, rows)
+    )
 
     const selDisp = term.onSelectionChange(() => {
       if (!settingsRef.current.copyOnSelect) return
@@ -173,7 +186,7 @@ export function Terminal({ settings, onPasteImage }: Props) {
     })
     ro.observe(host)
 
-    window.portico.resize(term.cols, term.rows)
+    window.portico.resize(sessionIdRef.current, term.cols, term.rows)
 
     const onCtx = (e: MouseEvent) => {
       e.preventDefault()
@@ -200,9 +213,23 @@ export function Terminal({ settings, onPasteImage }: Props) {
       fitRef.current = null
       searchRef.current = null
     }
-    // Re-create only when WebGL preference changes (needs new renderer).
+    // Re-create when session identity or WebGL preference changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings.webgl])
+  }, [sessionId, settings.webgl])
+
+  // Focus + fit when becoming active.
+  useEffect(() => {
+    if (!active) return
+    const term = termRef.current
+    if (!term) return
+    try {
+      fitRef.current?.fit()
+    } catch {
+      /* ignore */
+    }
+    term.focus()
+    window.portico.resize(sessionId, term.cols, term.rows)
+  }, [active, sessionId])
 
   // ---- live-apply appearance when settings change without remount ---------
   useEffect(() => {
@@ -241,8 +268,12 @@ export function Terminal({ settings, onPasteImage }: Props) {
   const closeCtx = () => setCtx(null)
 
   return (
-    <div className="term-host">
-      {searchOpen && (
+    <div
+      className={`term-host ${active ? 'active' : 'inactive'}`}
+      style={active ? undefined : { display: 'none' }}
+      aria-hidden={!active}
+    >
+      {searchOpen && active && (
         <div className="term-search-bar">
           <input
             ref={searchInputRef}
@@ -258,7 +289,7 @@ export function Terminal({ settings, onPasteImage }: Props) {
                 termRef.current?.focus()
               }
             }}
-            placeholder="Find in terminal…"
+            placeholder={t('term.findPlaceholder')}
             spellCheck={false}
           />
           <button type="button" className="btn ghost" onClick={() => runSearch('prev')} title="Previous">
@@ -298,7 +329,7 @@ export function Terminal({ settings, onPasteImage }: Props) {
                 closeCtx()
               }}
             >
-              Copy
+              {t('term.copy')}
             </button>
             <button
               type="button"
@@ -308,7 +339,7 @@ export function Terminal({ settings, onPasteImage }: Props) {
                 closeCtx()
               }}
             >
-              Paste
+              {t('term.paste')}
             </button>
             <button
               type="button"
@@ -318,7 +349,7 @@ export function Terminal({ settings, onPasteImage }: Props) {
                 onPasteImage?.()
               }}
             >
-              Paste image…
+              {t('term.pasteImage')}
             </button>
             <button
               type="button"
@@ -328,7 +359,7 @@ export function Terminal({ settings, onPasteImage }: Props) {
                 setSearchOpen(true)
               }}
             >
-              Find…
+              {t('term.find')}
             </button>
           </div>
         </>

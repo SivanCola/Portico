@@ -10,6 +10,11 @@ describe('normalizeAppSettings', () => {
     expect(normalizeAppSettings({})).toEqual(DEFAULT_APP_SETTINGS)
   })
 
+  it('accepts locale prefs', () => {
+    expect(normalizeAppSettings({ locale: 'zh-CN' }).locale).toBe('zh-CN')
+    expect(normalizeAppSettings({ locale: 'nope' as never }).locale).toBe('system')
+  })
+
   it('keeps custom prompt and flags', () => {
     const s = normalizeAppSettings({
       skipPastePrompt: true,
@@ -47,5 +52,11 @@ describe('normalizeAppSettings', () => {
     })
     expect(s.tmuxMode).toBe('always')
     expect(s.tmuxSessionName).toBe('my-session')
+  })
+
+  it('defaults syncRemoteClipboard to true', () => {
+    expect(DEFAULT_APP_SETTINGS.syncRemoteClipboard).toBe(true)
+    expect(normalizeAppSettings({}).syncRemoteClipboard).toBe(true)
+    expect(normalizeAppSettings({ syncRemoteClipboard: false }).syncRemoteClipboard).toBe(false)
   })
 })

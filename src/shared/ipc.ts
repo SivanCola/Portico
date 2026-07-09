@@ -8,6 +8,7 @@
  *  - One-way (main -> renderer) events live under `events`.
  *  - Request/response (renderer -> main) calls live under `channels` and use
  *    `Result<T>` so failures are values, not thrown exceptions.
+ *  - Session-scoped ops take `sessionId` (Portico multi-session).
  */
 import type {
   AppInfo,
@@ -19,6 +20,8 @@ import type {
   ProviderSession,
   Result,
   ResolvedSshTarget,
+  SessionId,
+  SessionSummary,
   ShelfItem,
   SshHostAlias,
   SshTarget,
@@ -27,12 +30,20 @@ import type {
 } from './types.js'
 
 export const IPC = {
-  // Connection lifecycle
+  // Multi-session lifecycle
+  SESSION_CREATE: 'portico:session:create',
+  SESSION_CLOSE: 'portico:session:close',
+  SESSION_LIST: 'portico:session:list',
+  SESSION_RENAME: 'portico:session:rename',
+  /** One-way: main pushes full session list when membership/title changes. */
+  SESSIONS_CHANGED: 'portico:sessions:changed',
+
+  // Connection lifecycle (scoped)
   CONNECT: 'portico:connect',
   DISCONNECT: 'portico:disconnect',
   IS_CONNECTED: 'portico:isConnected',
 
-  // Terminal data pump
+  // Terminal data pump (scoped)
   TERM_INPUT: 'portico:term:input',
   TERM_OUTPUT: 'portico:term:output',
   TERM_RESIZE: 'portico:term:resize',
@@ -53,7 +64,7 @@ export const IPC = {
   /** One-way main → renderer: toggle the command palette. */
   SHORTCUT_OPEN_PALETTE: 'portico:shortcut:openPalette',
 
-  // Provider / session control
+  // Provider / session control (AI provider — not SSH session)
   GET_SESSION: 'portico:getSession',
   SET_PROVIDER: 'portico:setProvider',
   DETECT_PROVIDER: 'portico:detectProvider',
@@ -124,6 +135,8 @@ export type TmuxEnterMode = 'off' | 'attach-if-exists' | 'always'
 export interface TmuxPrefsPayload {
   mode: TmuxEnterMode
   sessionName: string
+  /** Remote copy → Mac clipboard (OSC 52 + auto-configure tmux). */
+  syncRemoteClipboard: boolean
 }
 
 export interface TmuxSessionPayload {
@@ -133,19 +146,16 @@ export interface TmuxSessionPayload {
 }
 
 export interface TmuxEnterArgs {
+  sessionId: SessionId
   mode?: TmuxEnterMode
   sessionName?: string
   attachOnly?: string
   createNew?: string
 }
 
-export interface TmuxEnterResult {
-  action: string
-  session: string
-}
-
 /** Args passed to PASTE_IMAGE. */
 export interface PasteImageArgs {
+  sessionId: SessionId
   prompt?: string
   /** Override the auto-detected provider for this paste. */
   provider?: ProviderId
@@ -154,6 +164,7 @@ export interface PasteImageArgs {
 /** Connection result payload. */
 export interface ConnectResult {
   connected: boolean
+  sessionId: SessionId
   initialCwd?: string
 }
 
@@ -163,20 +174,50 @@ export interface StatusPayload {
   message: string
   /** Auto-clear after ms; omit to persist. */
   ttlMs?: number
+  sessionId?: SessionId
 }
 
 /** Connection state push from main -> renderer. */
 export interface ConnStatePayload {
+  sessionId: SessionId
   state: ConnectionState
   attempt?: number
   nextRetryIn?: number
   reason?: string
   /** Fine-grained phase while connecting. */
   phase?: ConnectPhase
+  user?: string
+  host?: string
+  alias?: string
+}
+
+/** Terminal output chunk (scoped). */
+export interface TermOutputPayload {
+  sessionId: SessionId
+  data: string
+}
+
+/** Provider session push (scoped). */
+export interface ProviderSessionPayload {
+  sessionId: SessionId
+  session: ProviderSession
+}
+
+/** Shelf item push (scoped). */
+export interface ShelfItemPayload {
+  sessionId: SessionId
+  item: ShelfItem
+}
+
+/** Port-forward list push (scoped). */
+export interface PortForwardChangedPayload {
+  sessionId: SessionId
+  forwards: PortForwardStatus[]
 }
 
 /** Args for uploading a local image file (path on disk). */
 export interface UploadLocalImageArgs {
+  sessionId: SessionId
   path: string
   prompt?: string
   /** When true, inject provider prompt after upload (default true). */
@@ -184,26 +225,43 @@ export interface UploadLocalImageArgs {
   provider?: ProviderId
 }
 
+export interface ConnectArgs {
+  sessionId: SessionId
+  target: SshTarget
+}
+
+export interface SessionRenameArgs {
+  sessionId: SessionId
+  title: string
+}
+
 /**
  * The typed API the preload script exposes to the renderer via contextBridge.
  * Every method mirrors an IPC channel and returns a Result.
  */
 export interface PorticoApi {
+  // Multi-session
+  createSession(): Promise<Result<SessionSummary>>
+  closeSession(sessionId: SessionId): Promise<Result<true>>
+  listSessions(): Promise<Result<SessionSummary[]>>
+  renameSession(sessionId: SessionId, title: string): Promise<Result<SessionSummary>>
+  onSessionsChanged(cb: (sessions: SessionSummary[]) => void): () => void
+
   // Lifecycle
-  connect(target: SshTarget): Promise<Result<ConnectResult>>
-  disconnect(): Promise<Result<true>>
-  isConnected(): Promise<Result<boolean>>
+  connect(sessionId: SessionId, target: SshTarget): Promise<Result<ConnectResult>>
+  disconnect(sessionId: SessionId): Promise<Result<true>>
+  isConnected(sessionId: SessionId): Promise<Result<boolean>>
 
   // Terminal
-  sendInput(data: string): void
-  onOutput(cb: (data: string) => void): () => void
-  resize(cols: number, rows: number): void
+  sendInput(sessionId: SessionId, data: string): void
+  onOutput(cb: (payload: TermOutputPayload) => void): () => void
+  resize(sessionId: SessionId, cols: number, rows: number): void
 
   // Image bridge
   clipboardHasImage(): Promise<Result<boolean>>
   pasteImage(args: PasteImageArgs): Promise<Result<UploadedBlob>>
-  uploadClipboard(): Promise<Result<UploadedBlob>>
-  pasteRemotePath(remotePath: string, prompt?: string): Promise<Result<true>>
+  uploadClipboard(sessionId: SessionId): Promise<Result<UploadedBlob>>
+  pasteRemotePath(sessionId: SessionId, remotePath: string, prompt?: string): Promise<Result<true>>
   uploadLocalImage(args: UploadLocalImageArgs): Promise<Result<UploadedBlob>>
   pickImageFile(): Promise<Result<string | null>>
   /** Main process fires this when the user hits the paste-image accelerator. */
@@ -211,31 +269,36 @@ export interface PorticoApi {
   onOpenSettings(cb: () => void): () => void
   onOpenPalette(cb: () => void): () => void
 
-  // Session
-  getSession(): Promise<Result<ProviderSession>>
-  setProvider(provider: ProviderId): Promise<Result<ProviderSession>>
-  detectProvider(): Promise<Result<ProviderId>>
-  onSessionChanged(cb: (session: ProviderSession) => void): () => void
+  // Provider (AI) session
+  getSession(sessionId: SessionId): Promise<Result<ProviderSession>>
+  setProvider(sessionId: SessionId, provider: ProviderId): Promise<Result<ProviderSession>>
+  detectProvider(sessionId: SessionId): Promise<Result<ProviderId>>
+  onSessionChanged(cb: (payload: ProviderSessionPayload) => void): () => void
 
   // Shelf
-  shelfList(): Promise<Result<ShelfItem[]>>
-  shelfClear(): Promise<Result<true>>
-  shelfRemove(id: string): Promise<Result<true>>
-  onShelfItemUpdated(cb: (item: ShelfItem) => void): () => void
+  shelfList(sessionId: SessionId): Promise<Result<ShelfItem[]>>
+  shelfClear(sessionId: SessionId): Promise<Result<true>>
+  shelfRemove(sessionId: SessionId, id: string): Promise<Result<true>>
+  onShelfItemUpdated(cb: (payload: ShelfItemPayload) => void): () => void
 
   // Remote cache
-  clearRemoteCache(): Promise<Result<{ deleted: number }>>
+  clearRemoteCache(sessionId: SessionId): Promise<Result<{ deleted: number }>>
 
   // Connection state
   onConnectionState(cb: (payload: ConnStatePayload) => void): () => void
-  getConnectionState(): Promise<Result<{ state: ConnectionState; user?: string; host?: string; alias?: string }>>
-  cancelReconnect(): Promise<Result<true>>
+  getConnectionState(sessionId: SessionId): Promise<
+    Result<{ state: ConnectionState; user?: string; host?: string; alias?: string; sessionId: SessionId }>
+  >
+  cancelReconnect(sessionId: SessionId): Promise<Result<true>>
 
   // Port forwarding
-  addPortForward(rule: { localPort: number; remoteHost: string; remotePort: number }): Promise<Result<PortForwardRule>>
-  removePortForward(id: string): Promise<Result<true>>
-  listPortForwards(): Promise<Result<PortForwardStatus[]>>
-  onPortForwardChanged(cb: (forwards: PortForwardStatus[]) => void): () => void
+  addPortForward(
+    sessionId: SessionId,
+    rule: { localPort: number; remoteHost: string; remotePort: number }
+  ): Promise<Result<PortForwardRule>>
+  removePortForward(sessionId: SessionId, id: string): Promise<Result<true>>
+  listPortForwards(sessionId: SessionId): Promise<Result<PortForwardStatus[]>>
+  onPortForwardChanged(cb: (payload: PortForwardChangedPayload) => void): () => void
 
   // Status
   onStatus(cb: (s: StatusPayload) => void): () => void
@@ -251,13 +314,7 @@ export interface PorticoApi {
   pickPrivateKey(): Promise<Result<string | null>>
 
   // SSH config alias support
-  /**
-   * Expand a `~/.ssh/config` alias into real host/port/user/key fields. When
-   * `matched` is false the caller should treat `host` as the verbatim alias
-   * and let the user fill the rest manually.
-   */
   resolveSshAlias(alias: string): Promise<Result<ResolvedSshTarget>>
-  /** List configured host aliases from `~/.ssh/config` for the host dropdown. */
   listSshHosts(): Promise<Result<SshHostAlias[]>>
 
   setFeatureFlags(flags: Partial<FeatureFlagsPayload>): Promise<Result<FeatureFlagsPayload>>
@@ -265,6 +322,11 @@ export interface PorticoApi {
 
   setTmuxPrefs(prefs: Partial<TmuxPrefsPayload>): Promise<Result<TmuxPrefsPayload>>
   getTmuxPrefs(): Promise<Result<TmuxPrefsPayload>>
-  listTmuxSessions(): Promise<Result<TmuxSessionPayload[]>>
-  enterTmux(args?: TmuxEnterArgs): Promise<Result<TmuxEnterResult>>
+  listTmuxSessions(sessionId: SessionId): Promise<Result<TmuxSessionPayload[]>>
+  enterTmux(args: TmuxEnterArgs): Promise<Result<TmuxEnterResult>>
+}
+
+export interface TmuxEnterResult {
+  action: string
+  session: string
 }

@@ -3,8 +3,12 @@
  * Terminal appearance lives in `terminal-settings.ts`.
  * Runtime L2 flags are also pushed to main via setFeatureFlags.
  */
+import type { AppLocale } from '../i18n/locales.js'
+import { isAppLocale } from '../i18n/locales.js'
 
 export interface AppSettings {
+  /** UI language: system | en | zh-CN */
+  locale: AppLocale
   /**
    * When true, ⌘⇧V / Paste image skips the prompt dialog and uses
    * `defaultPastePrompt` immediately.
@@ -36,13 +40,20 @@ export interface AppSettings {
   tmuxMode: 'off' | 'attach-if-exists' | 'always'
   /** Default tmux session name for auto-enter / palette actions. */
   tmuxSessionName: string
+  /**
+   * Sync remote copy to the Mac clipboard:
+   * - accept OSC 52 from the remote PTY
+   * - on connect, try `tmux set-option -g set-clipboard on` (no conf edit)
+   */
+  syncRemoteClipboard: boolean
 }
 
 export const APP_SETTINGS_KEY = 'portico.appSettings'
 /** Bump when shape changes so normalize can migrate. */
-export const APP_SETTINGS_VERSION = 3
+export const APP_SETTINGS_VERSION = 5
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
+  locale: 'system',
   skipPastePrompt: false,
   defaultPastePrompt: 'Analyze this image',
   confirmClearCache: true,
@@ -52,7 +63,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   enableProviderDetect: true,
   enableAutoUpdate: true,
   tmuxMode: 'off',
-  tmuxSessionName: 'portico'
+  tmuxSessionName: 'portico',
+  syncRemoteClipboard: true
 }
 
 export function loadAppSettings(): AppSettings {
@@ -109,7 +121,10 @@ export function normalizeAppSettings(
       : DEFAULT_APP_SETTINGS.tmuxSessionName
   )
 
+  const locale = isAppLocale(partial.locale) ? partial.locale : DEFAULT_APP_SETTINGS.locale
+
   return {
+    locale,
     skipPastePrompt: partial.skipPastePrompt ?? DEFAULT_APP_SETTINGS.skipPastePrompt,
     defaultPastePrompt: prompt,
     confirmClearCache: partial.confirmClearCache ?? DEFAULT_APP_SETTINGS.confirmClearCache,
@@ -119,7 +134,9 @@ export function normalizeAppSettings(
     enableProviderDetect,
     enableAutoUpdate: partial.enableAutoUpdate ?? DEFAULT_APP_SETTINGS.enableAutoUpdate,
     tmuxMode,
-    tmuxSessionName
+    tmuxSessionName,
+    syncRemoteClipboard:
+      partial.syncRemoteClipboard ?? DEFAULT_APP_SETTINGS.syncRemoteClipboard
   }
 }
 
@@ -137,9 +154,14 @@ function sanitizeTmuxName(raw: string): string {
 export function toTmuxPrefs(s: AppSettings): {
   mode: AppSettings['tmuxMode']
   sessionName: string
+  syncRemoteClipboard: boolean
 } {
   const n = normalizeAppSettings(s)
-  return { mode: n.tmuxMode, sessionName: n.tmuxSessionName }
+  return {
+    mode: n.tmuxMode,
+    sessionName: n.tmuxSessionName,
+    syncRemoteClipboard: n.syncRemoteClipboard
+  }
 }
 
 /** Map app settings → main-process feature flags. */

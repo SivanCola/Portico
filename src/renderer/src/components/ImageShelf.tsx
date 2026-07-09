@@ -1,4 +1,5 @@
 import type { ShelfItem } from '@shared/types.js'
+import { useI18n } from '../i18n/index.js'
 
 interface Props {
   items: ShelfItem[]
@@ -27,23 +28,24 @@ export function ImageShelf({
   onPickFile,
   enabled
 }: Props) {
+  const { t } = useI18n()
   return (
     <aside className="shelf">
       <header>
-        <h3>Image Shelf</h3>
+        <h3>{t('shelf.title')}</h3>
         <div className="shelf-header-actions">
-          <button className="btn ghost" onClick={onPickFile} disabled={!enabled} title="Upload image file">
-            File…
+          <button className="btn ghost" onClick={onPickFile} disabled={!enabled} title={t('shelf.file')}>
+            {t('shelf.file')}
           </button>
-          <button className="btn ghost" onClick={onClear} disabled={items.length === 0} title="Clear local list">
-            Clear
+          <button className="btn ghost" onClick={onClear} disabled={items.length === 0} title={t('shelf.clear')}>
+            {t('shelf.clear')}
           </button>
         </div>
       </header>
       <div className="list">
         {items.length === 0 && (
           <div className="empty">
-            Paste ⌘⇧V, drop an image, or pick a file. Images upload to the remote host for AI CLIs.
+            {t('shelf.empty')}
           </div>
         )}
         {items.map((item) => (
@@ -78,11 +80,11 @@ export function ImageShelf({
                 </button>
               ) : (
                 <button className="btn" onClick={() => onRepaste(item)} disabled={item.status !== 'ready' || !enabled}>
-                  Paste again
+                  {t('shelf.pasteAgain')}
                 </button>
               )}
               <button className="btn ghost" onClick={() => onCopyPath(item)} disabled={!item.remotePath}>
-                Copy path
+                {t('shelf.copyPath')}
               </button>
               <button className="btn ghost" onClick={() => onRemove(item)} title="Remove from shelf">
                 ×
