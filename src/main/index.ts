@@ -19,7 +19,9 @@ import type {
   PortForwardStatus,
   ConnectionState,
   Result,
+  ResolvedSshTarget,
   ShelfItem,
+  SshHostAlias,
   SshTarget,
   UpdateStatus,
   UploadedBlob
@@ -27,6 +29,7 @@ import type {
 import { PorticoController } from './portico-controller.js'
 import { UpdateService } from './update-service.js'
 import { getLogger } from './logger.js'
+import { resolveAlias, listHostAliases } from './ssh-config.js'
 
 const __dirname = join(fileURLToPath(import.meta.url), '..')
 const log = getLogger()
@@ -291,6 +294,13 @@ function registerIpc(c: PorticoController): void {
     }
     return ok(result.filePaths[0] as string)
   })
+
+  // SSH config alias expansion (~/.ssh/config). Both read the live config so
+  // edits the user makes outside the app are picked up without a restart.
+  handleArg<string, Result<ResolvedSshTarget>>(IPC.RESOLVE_SSH_ALIAS, (alias) =>
+    ok(resolveAlias(alias))
+  )
+  handle(IPC.LIST_SSH_HOSTS, () => ok(listHostAliases()))
 }
 
 /** Static app identity for the renderer (name, version, channels, packaged). */

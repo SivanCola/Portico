@@ -83,7 +83,10 @@ const api: PorticoApi = {
     return () => ipcRenderer.removeListener(IPC.UPDATE_STATUS, h)
   },
   // File pickers
-  pickPrivateKey: () => ipcRenderer.invoke(IPC.PICK_PRIVATE_KEY)
+  pickPrivateKey: () => ipcRenderer.invoke(IPC.PICK_PRIVATE_KEY),
+  // SSH config alias support
+  resolveSshAlias: (alias) => ipcRenderer.invoke(IPC.RESOLVE_SSH_ALIAS, alias),
+  listSshHosts: () => ipcRenderer.invoke(IPC.LIST_SSH_HOSTS)
 }
 
 contextBridge.exposeInMainWorld('portico', api)

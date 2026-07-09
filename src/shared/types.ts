@@ -28,6 +28,38 @@ export interface SshTarget {
    * ignored unless the agent cannot authenticate.
    */
   useAgent?: boolean
+  /**
+   * The SSH alias the user typed (e.g. `noban-vm`), when the host was resolved
+   * from `~/.ssh/config`. `host` holds the real HostName; `alias` is purely for
+   * display (top bar, recent targets) so the user sees what they typed.
+   */
+  alias?: string
+}
+
+/**
+ * Result of expanding an SSH alias via `~/.ssh/config`. Returned by the
+ * `resolveSshAlias` IPC so the renderer can fill in real host/port/user/key
+ * without the main process needing to know the connection form's structure.
+ */
+export interface ResolvedSshTarget {
+  /** True when at least one `Host` block matched the alias. */
+  matched: boolean
+  /** Real address (HostName if present, otherwise the alias verbatim). */
+  host: string
+  user?: string
+  port: number
+  identityFile?: string
+  /** The alias as the user typed it, echoed back for display. */
+  alias: string
+}
+
+/** A picker-friendly summary of one configured SSH host alias. */
+export interface SshHostAlias {
+  alias: string
+  /** Real HostName when known, for the dropdown's secondary line. */
+  hostName?: string
+  port?: number
+  user?: string
 }
 
 /** What a provider adapter needs to decide how to format a reference. */

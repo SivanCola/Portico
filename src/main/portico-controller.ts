@@ -147,8 +147,13 @@ export class PorticoController {
     return ok(!!this.session?.isConnected())
   }
 
-  getConnectionState(): Result<{ state: ConnectionState; user?: string; host?: string }> {
-    return ok({ state: this.connState, user: this.target?.user, host: this.target?.host })
+  getConnectionState(): Result<{ state: ConnectionState; user?: string; host?: string; alias?: string }> {
+    return ok({
+      state: this.connState,
+      user: this.target?.user,
+      host: this.target?.host,
+      alias: this.target?.alias
+    })
   }
 
   async cancelReconnect(): Promise<Result<true>> {

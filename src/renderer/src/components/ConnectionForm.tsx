@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import type { AuthMode, ConnectPhase, SshTarget } from '@shared/types.js'
+import { useEffect, useState } from 'react'
+import type { AuthMode, ConnectPhase, ResolvedSshTarget, SshHostAlias, SshTarget } from '@shared/types.js'
 
 interface Props {
   onConnect: (t: SshTarget) => Promise<string | null>
@@ -14,6 +14,8 @@ interface RecentTarget {
   port: number
   auth: AuthMode
   privateKeyPath?: string
+  /** SSH alias, when this target came from ~/.ssh/config. */
+  alias?: string
 }
 
 const RECENT_KEY = 'portico.recentTargets'
@@ -72,20 +74,74 @@ export function ConnectionForm({ onConnect, phase }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [recent, setRecent] = useState<RecentTarget[]>(loadRecent)
 
+  // SSH config alias support.
+  const [aliases, setAliases] = useState<SshHostAlias[]>([])
+  /** Resolved target when the current `host` value matches an alias. */
+  const [resolved, setResolved] = useState<ResolvedSshTarget | null>(null)
+
+  // Load configured host aliases once for the dropdown. Best-effort: a missing
+  // or empty ~/.ssh/config simply yields an empty list and the field behaves
+  // as a plain host input.
+  useEffect(() => {
+    window.portico
+      .listSshHosts()
+      .then((r) => {
+        if (r.ok) setAliases(r.value)
+      })
+      .catch(() => {})
+  }, [])
+
   const fillFrom = (r: RecentTarget) => {
-    setHost(r.host)
+    // Prefer the alias for display when the recent entry came from ssh config;
+    // the real host is resolved again on the next blur.
+    setHost(r.alias ?? r.host)
     setUser(r.user)
     setPort(r.port)
     setAuth(r.auth)
     setPrivateKeyPath(r.privateKeyPath ?? '')
+    setResolved(r.alias ? { matched: true, host: r.host, user: r.user, port: r.port, alias: r.alias } : null)
     setError(null)
   }
 
-  const onHostBlur = () => {
+  // When the host field loses focus, try to expand it as a ssh-config alias.
+  // On a hit we fill in user/port/key (unless the user already typed them) and
+  // switch to key auth when an IdentityFile is present — but we leave the host
+  // field showing the alias so the user sees what they typed.
+  const onHostBlur = async () => {
     const parsed = parseUserHost(host)
     if (parsed.user) {
       setUser(parsed.user)
       setHost(parsed.host)
+    }
+    const candidate = parsed.host.trim()
+    if (!candidate) {
+      setResolved(null)
+      return
+    }
+    // Skip the round-trip when there are no configured aliases at all.
+    if (aliases.length === 0) {
+      setResolved(null)
+      return
+    }
+    try {
+      const r = await window.portico.resolveSshAlias(candidate)
+      if (!r.ok) {
+        setResolved(null)
+        return
+      }
+      setResolved(r.value)
+      if (r.value.matched) {
+        // Only auto-fill fields the user hasn't already set, so a manual
+        // override survives a stray blur.
+        if (!user) setUser(r.value.user ?? '')
+        if (port === 22 && r.value.port) setPort(r.value.port)
+        if (r.value.identityFile) {
+          setPrivateKeyPath((prev) => prev || r.value.identityFile!)
+          setAuth('key')
+        }
+      }
+    } catch {
+      setResolved(null)
     }
   }
 
@@ -93,18 +149,43 @@ export function ConnectionForm({ onConnect, phase }: Props) {
     e.preventDefault()
     setError(null)
     setBusy(true)
+
+    // If the host field holds a known alias, submit the *resolved* real
+    // address (so the session layer + known_hosts both work on the real host)
+    // while carrying the alias along for display only.
     const parsed = parseUserHost(host)
-    const finalUser = (parsed.user || user).trim()
-    const finalHost = parsed.host.trim()
+    const finalHostInput = parsed.host.trim()
+    const finalUserInput = (parsed.user || user).trim()
+
+    // Use already-resolved data if the field hasn't changed since the blur;
+    // otherwise resolve now so typing+Enter without blurring still works.
+    let res = resolved && resolved.alias === finalHostInput ? resolved : null
+    if (!res && aliases.length > 0) {
+      try {
+        const r = await window.portico.resolveSshAlias(finalHostInput)
+        if (r.ok && r.value.matched) res = r.value
+      } catch {
+        /* fall through to manual entry */
+      }
+    }
+
+    const isAlias = !!res?.matched
+    const finalHost = isAlias ? res!.host : finalHostInput
+    const finalUser = (isAlias ? res!.user ?? finalUserInput : finalUserInput) || ''
+    const finalPort = isAlias ? res!.port : Number(port) || 22
+    const finalKey = isAlias ? res!.identityFile ?? privateKeyPath : privateKeyPath
+    const finalAlias = isAlias ? finalHostInput : undefined
+
     const target: SshTarget = {
       id: `${finalUser}@${finalHost}`,
       host: finalHost,
       user: finalUser,
-      port: Number(port) || 22,
+      port: finalPort,
       password: auth === 'password' ? password || undefined : undefined,
-      privateKeyPath: auth === 'key' ? privateKeyPath || undefined : undefined,
+      privateKeyPath: auth === 'key' ? finalKey || undefined : undefined,
       privateKeyPassphrase: auth === 'key' ? passphrase || undefined : undefined,
-      useAgent: auth === 'agent' ? true : undefined
+      useAgent: auth === 'agent' ? true : undefined,
+      alias: finalAlias
     }
     const err = await onConnect(target)
     setBusy(false)
@@ -113,11 +194,12 @@ export function ConnectionForm({ onConnect, phase }: Props) {
     } else {
       setRecent(
         saveRecent({
-          host: target.host,
-          user: target.user,
-          port: target.port,
+          host: finalHost,
+          user: finalUser,
+          port: finalPort,
           auth,
-          privateKeyPath: auth === 'key' ? privateKeyPath || undefined : undefined
+          privateKeyPath: auth === 'key' ? finalKey || undefined : undefined,
+          alias: finalAlias
         })
       )
     }
@@ -126,7 +208,7 @@ export function ConnectionForm({ onConnect, phase }: Props) {
   const canSubmit =
     !busy &&
     !!host.trim() &&
-    !!(user.trim() || host.includes('@')) &&
+    !!(user.trim() || host.includes('@') || resolved?.matched) &&
     (auth === 'agent' ||
       (auth === 'password' && !!password) ||
       (auth === 'key' && !!privateKeyPath))
@@ -144,7 +226,7 @@ export function ConnectionForm({ onConnect, phase }: Props) {
               onClick={() => fillFrom(r)}
               title={`${r.user}@${r.host}:${r.port} (${r.auth})`}
             >
-              {r.user}@{r.host}
+              {r.alias ?? `${r.user}@${r.host}`}
             </button>
           ))}
         </div>
@@ -153,12 +235,31 @@ export function ConnectionForm({ onConnect, phase }: Props) {
         <label>Host</label>
         <input
           value={host}
-          onChange={(e) => setHost(e.target.value)}
+          onChange={(e) => {
+            setHost(e.target.value)
+            // Invalidate the cached resolution if the field is edited.
+            if (resolved && resolved.alias !== e.target.value.trim()) setResolved(null)
+          }}
           onBlur={onHostBlur}
-          placeholder="ubuntu@10.0.0.4 or hostname"
+          placeholder="hostname or SSH alias"
+          list="portico-ssh-hosts"
           autoFocus
           spellCheck={false}
         />
+        {/* Native datalist: zero-dependency dropdown of configured aliases. */}
+        <datalist id="portico-ssh-hosts">
+          {aliases.map((a) => (
+            <option key={a.alias} value={a.alias}>
+              {a.hostName ? `${a.user ?? ''}@${a.hostName}${a.port ? `:${a.port}` : ''}`.replace(/^@/, '') : ''}
+            </option>
+          ))}
+        </datalist>
+        {resolved?.matched && (
+          <div className="hint">
+            → {resolved.host}{resolved.port ? `:${resolved.port}` : ''}
+            {resolved.user ? ` (${resolved.user})` : ''} · from ~/.ssh/config
+          </div>
+        )}
       </div>
       <div className="row">
         <div className="field">

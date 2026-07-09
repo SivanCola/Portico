@@ -18,7 +18,7 @@ import { PortForwards } from './components/PortForwards.js'
 import { CommandPalette, type PaletteAction } from './components/CommandPalette.js'
 import { PastePromptDialog } from './components/PastePromptDialog.js'
 
-type ConnInfo = { user: string; host: string } | null
+type ConnInfo = { user: string; host: string; alias?: string } | null
 type PromptMode = { kind: 'clipboard' } | { kind: 'file'; path: string } | null
 
 export function App() {
@@ -79,7 +79,9 @@ export function App() {
       .then((r) => {
         if (!r.ok || r.value.state === 'disconnected') return
         setConnState(r.value.state)
-        if (r.value.user && r.value.host) setConnInfo({ user: r.value.user, host: r.value.host })
+        if (r.value.user && r.value.host) {
+          setConnInfo({ user: r.value.user, host: r.value.host, alias: r.value.alias })
+        }
         void refreshSession()
         window.portico.listPortForwards().then((pf) => {
           if (pf.ok) setPortForwards(pf.value)
@@ -152,7 +154,7 @@ export function App() {
     async (t: SshTarget): Promise<string | null> => {
       const r = await window.portico.connect(t)
       if (!r.ok) return r.error.message
-      setConnInfo({ user: t.user, host: t.host })
+      setConnInfo({ user: t.user, host: t.host, alias: t.alias })
       await refreshSession()
       const sl = await window.portico.shelfList()
       if (sl.ok) setShelf(sl.value)
@@ -541,7 +543,7 @@ function TopBar({ connState, connInfo, provider, onProvider, onDisconnect, onOpe
       </div>
       {connInfo && (
         <span className="conn">
-          {connInfo.user}@{connInfo.host}
+          {connInfo.user}@{connInfo.alias ?? connInfo.host}
         </span>
       )}
       <div className="spacer" />

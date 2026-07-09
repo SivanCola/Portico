@@ -18,7 +18,9 @@ import type {
   ProviderId,
   ProviderSession,
   Result,
+  ResolvedSshTarget,
   ShelfItem,
+  SshHostAlias,
   SshTarget,
   UpdateStatus,
   UploadedBlob
@@ -81,7 +83,11 @@ export const IPC = {
   UPDATE_STATUS: 'portico:updates:status',
 
   // File pickers
-  PICK_PRIVATE_KEY: 'portico:dialog:pickPrivateKey'
+  PICK_PRIVATE_KEY: 'portico:dialog:pickPrivateKey',
+
+  // SSH config (~/.ssh/config) alias resolution + host listing
+  RESOLVE_SSH_ALIAS: 'portico:ssh:resolveAlias',
+  LIST_SSH_HOSTS: 'portico:ssh:listHosts'
 } as const
 
 /** Args passed to PASTE_IMAGE. */
@@ -164,7 +170,7 @@ export interface PorticoApi {
 
   // Connection state
   onConnectionState(cb: (payload: ConnStatePayload) => void): () => void
-  getConnectionState(): Promise<Result<{ state: ConnectionState; user?: string; host?: string }>>
+  getConnectionState(): Promise<Result<{ state: ConnectionState; user?: string; host?: string; alias?: string }>>
   cancelReconnect(): Promise<Result<true>>
 
   // Port forwarding
@@ -185,4 +191,14 @@ export interface PorticoApi {
   // File pickers
   /** Open a native dialog to pick an SSH private key; null if cancelled. */
   pickPrivateKey(): Promise<Result<string | null>>
+
+  // SSH config alias support
+  /**
+   * Expand a `~/.ssh/config` alias into real host/port/user/key fields. When
+   * `matched` is false the caller should treat `host` as the verbatim alias
+   * and let the user fill the rest manually.
+   */
+  resolveSshAlias(alias: string): Promise<Result<ResolvedSshTarget>>
+  /** List configured host aliases from `~/.ssh/config` for the host dropdown. */
+  listSshHosts(): Promise<Result<SshHostAlias[]>>
 }
