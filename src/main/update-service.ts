@@ -23,6 +23,9 @@ import {
 import { ok, err } from '@shared/result.js'
 import type { Result } from '@shared/types.js'
 import type { UpdateState, UpdateStatus } from '@shared/types.js'
+import { getLogger } from './logger.js'
+
+const log = getLogger()
 
 /**
  * The updater is imported lazily so that dev / test environments never pull in
@@ -61,7 +64,10 @@ export class UpdateService {
    * automatic check shortly after launch.
    */
   async init(): Promise<void> {
-    if (!app.isPackaged) return // updates disabled in dev
+    if (!app.isPackaged) {
+      log.info('updater', 'updates disabled in dev')
+      return
+    }
 
     const mod = await import('electron-updater')
     const autoUpdater = mod.autoUpdater as AutoUpdater
@@ -73,34 +79,38 @@ export class UpdateService {
     autoUpdater.channel = updateChannel()
     // Silence electron-updater's default console logging.
     autoUpdater.logger = null
+    log.info('updater', 'initialized', {
+      channel: updateChannel(),
+      allowPrerelease: allowPrerelease(),
+      autoDownload: autoUpdater.autoDownload
+    })
 
-    autoUpdater.on('checking-for-update', () => this.set({ state: 'checking' }))
-    autoUpdater.on('update-available', (info: unknown) =>
-      this.set({
-        state: 'available',
-        version: (info as { version?: string })?.version,
-        percent: undefined,
-        message: undefined
-      })
-    )
-    autoUpdater.on('update-not-available', () =>
+    autoUpdater.on('checking-for-update', () => {
+      log.info('updater', 'checking for updates')
+      this.set({ state: 'checking' })
+    })
+    autoUpdater.on('update-available', (info: unknown) => {
+      const version = (info as { version?: string })?.version
+      log.info('updater', 'update available', { version })
+      this.set({ state: 'available', version, percent: undefined, message: undefined })
+    })
+    autoUpdater.on('update-not-available', () => {
+      log.info('updater', 'no update available')
       this.set({ state: 'not-available', message: 'You are on the latest version.' })
-    )
+    })
     autoUpdater.on('download-progress', (progress: unknown) => {
       const percent = (progress as { percent?: number })?.percent
       this.set({ state: 'downloading', percent })
     })
-    autoUpdater.on('update-downloaded', (info: unknown) =>
-      this.set({
-        state: 'downloaded',
-        version: (info as { version?: string })?.version,
-        percent: 100,
-        message: 'Update ready. Restart to install.'
-      })
-    )
-    autoUpdater.on('error', (e: unknown) =>
+    autoUpdater.on('update-downloaded', (info: unknown) => {
+      const version = (info as { version?: string })?.version
+      log.info('updater', 'update downloaded', { version })
+      this.set({ state: 'downloaded', version, percent: 100, message: 'Update ready. Restart to install.' })
+    })
+    autoUpdater.on('error', (e: unknown) => {
+      log.error('updater', 'update error', { err: e as Error })
       this.set({ state: 'error', message: (e as Error)?.message ?? 'Update check failed.' })
-    )
+    })
 
     const delay = this.opts.startupDelayMs ?? 10_000
     this.startupTimer = setTimeout(() => {

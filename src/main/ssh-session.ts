@@ -20,6 +20,9 @@ import { basename } from 'node:path'
 import { readFile } from 'node:fs/promises'
 import { PORTICO_REMOTE_DIR } from '@shared/constants.js'
 import type { SshTarget } from '@shared/types.js'
+import { getLogger, redactTarget } from './logger.js'
+
+const log = getLogger()
 
 export interface SshSessionEvents {
   data: (chunk: string) => void
@@ -84,7 +87,10 @@ export class SshSession extends EventEmitter {
     }
 
     await new Promise<void>((resolve, reject) => {
-      const onErr = (err: Error) => reject(Object.assign(new Error(err.message), { code: 'SSH_CONNECT' }))
+      const onErr = (err: Error) => {
+        log.error('ssh', 'connect failed', { ...redactTarget(t), err })
+        reject(Object.assign(new Error(err.message), { code: 'SSH_CONNECT' }))
+      }
 
       client.once('ready', () => {
         client.removeListener('error', onErr)
@@ -108,6 +114,7 @@ export class SshSession extends EventEmitter {
     // Detect unexpected connection loss at the transport level.
     client.on('close', () => {
       if (!this.userDisconnect && this.connected) {
+        log.warn('ssh', 'transport closed unexpectedly', redactTarget(t))
         this.connected = false
         this.sftp = null
         this.emit('close', { intentional: false })
@@ -119,7 +126,10 @@ export class SshSession extends EventEmitter {
       client.shell(
         { term: 'xterm-256color', cols: 80, rows: 24 },
         (err, stream) => {
-          if (err) return reject(Object.assign(new Error(err.message), { code: 'SSH_SHELL' }))
+          if (err) {
+            log.error('ssh', 'shell open failed', { ...redactTarget(t), err })
+            return reject(Object.assign(new Error(err.message), { code: 'SSH_SHELL' }))
+          }
           this.stream = stream
           stream.on('data', (d: Buffer) => {
             const text = d.toString('utf8')
@@ -128,6 +138,7 @@ export class SshSession extends EventEmitter {
           })
           stream.on('close', () => {
             if (!this.userDisconnect && this.connected) {
+              log.warn('ssh', 'shell stream closed unexpectedly', redactTarget(t))
               this.connected = false
               this.sftp = null
               this.emit('close', { intentional: false })
@@ -170,7 +181,10 @@ export class SshSession extends EventEmitter {
     if (!this.client) throw Object.assign(new Error('Not connected'), { code: 'NOT_CONNECTED' })
     const sftp = await new Promise<SFTPWrapper>((resolve, reject) => {
       this.client!.sftp((err, s) => {
-        if (err) return reject(Object.assign(new Error(err.message), { code: 'SSH_SFTP' }))
+        if (err) {
+          log.error('ssh', 'sftp open failed', { err })
+          return reject(Object.assign(new Error(err.message), { code: 'SSH_SFTP' }))
+        }
         resolve(s)
       })
     })

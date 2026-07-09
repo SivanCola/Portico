@@ -3,6 +3,9 @@ import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import type { Client } from 'ssh2'
 import type { PortForwardRule, PortForwardStatus } from '@shared/types.js'
+import { getLogger } from './logger.js'
+
+const log = getLogger()
 
 interface ForwardEntry {
   rule: PortForwardRule
@@ -54,6 +57,7 @@ export class PortForwarder extends EventEmitter {
     entry.server = server
 
     server.on('error', (err: NodeJS.ErrnoException) => {
+      log.error('pfforward', 'forward server error', { localPort: opts.localPort, err })
       entry.state = 'error'
       entry.error = err.message
       this.emitChange()
@@ -63,12 +67,14 @@ export class PortForwarder extends EventEmitter {
       server.listen(opts.localPort, '127.0.0.1', () => resolve())
       server.once('error', (err: NodeJS.ErrnoException) => {
         if (err.code === 'EADDRINUSE') {
+          log.warn('pfforward', 'listen failed: port in use', { localPort: opts.localPort })
           reject(
             Object.assign(new Error(`Port ${opts.localPort} is already in use.`), {
               code: 'PORT_IN_USE'
             })
           )
         } else {
+          log.error('pfforward', 'listen failed', { localPort: opts.localPort, err })
           reject(
             Object.assign(new Error(err.message), { code: 'PF_LISTEN_FAILED' })
           )
@@ -145,6 +151,12 @@ export class PortForwarder extends EventEmitter {
       entry.rule.remotePort,
       (err, sshStream) => {
         if (err) {
+          log.warn('pfforward', 'tunnel forwardOut failed', {
+            localPort: entry.rule.localPort,
+            remoteHost: entry.rule.remoteHost,
+            remotePort: entry.rule.remotePort,
+            err
+          })
           localSocket.destroy()
           return
         }

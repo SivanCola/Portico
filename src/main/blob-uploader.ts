@@ -17,6 +17,9 @@ import {
 import { blobPath, sha256Hex } from '@shared/hash.js'
 import type { NormalizedImage, UploadedBlob } from '@shared/types.js'
 import type { SshSession } from './ssh-session.js'
+import { getLogger } from './logger.js'
+
+const log = getLogger()
 
 export interface UploadResult {
   blob: UploadedBlob
@@ -30,6 +33,7 @@ export async function uploadBlob(
   onProgress?: (sent: number, total: number) => void
 ): Promise<UploadResult> {
   if (img.data.byteLength > MAX_IMAGE_BYTES) {
+    log.warn('upload', 'image rejected as too large', { bytes: img.data.byteLength, limit: MAX_IMAGE_BYTES })
     throw Object.assign(
       new Error(
         `Image is ${(img.data.byteLength / 1024 / 1024).toFixed(1)} MiB; limit is ${(
@@ -51,6 +55,7 @@ export async function uploadBlob(
   const exists = await remoteExists(session, absPath)
   let transferred = false
   if (!exists) {
+    log.info('upload', 'uploading blob', { hash, bytes: img.data.byteLength, ext: img.ext })
     onProgress?.(0, img.data.byteLength)
     await session.uploadBuffer(img.data, absPath)
     onProgress?.(img.data.byteLength, img.data.byteLength)

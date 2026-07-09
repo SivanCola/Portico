@@ -25,8 +25,10 @@ import { SshSession } from './ssh-session.js'
 import { PortForwarder } from './port-forwarder.js'
 import { uploadBlob } from './blob-uploader.js'
 import { clipboardHasImage, readClipboardImage } from './clipboard.js'
+import { getLogger, redactTarget } from './logger.js'
 
 const MAX_RECONNECT_ATTEMPTS = 10
+const log = getLogger()
 
 export class PorticoController {
   private session: SshSession | null = null
@@ -58,6 +60,7 @@ export class PorticoController {
   async connect(target: SshTarget): Promise<Result<ConnectResult>> {
     try {
       this.assertTarget(target)
+      log.info('controller', 'connect attempt', redactTarget(target))
       this.setConnState('connecting')
 
       const session = new SshSession(target)
@@ -77,9 +80,11 @@ export class PorticoController {
       this.reconnectCancelled = false
 
       this.setConnState('connected')
+      log.info('controller', 'connected', { ...redactTarget(target), cwd: info.initialCwd })
       this.pushStatus('info', `Connected to ${target.user}@${target.host}.`)
       return ok({ connected: true, initialCwd: info.initialCwd })
     } catch (e) {
+      log.error('controller', 'connect failed', { ...redactTarget(target), err: e as Error })
       this.setConnState('disconnected')
       return err('CONNECT_FAILED', (e as Error).message)
     }
@@ -136,6 +141,7 @@ export class PorticoController {
     this.closeHandled = true
 
     if (info.intentional) {
+      log.info('controller', 'session closed intentionally')
       this.setConnState('disconnected')
       this.pushStatus('warn', 'SSH session closed.')
       this.portForwarder?.destroyAll()
@@ -143,6 +149,7 @@ export class PorticoController {
       return
     }
 
+    log.warn('controller', 'session closed unexpectedly; will reconnect', this.target ? redactTarget(this.target) : {})
     this.portForwarder?.dropActiveTunnels()
 
     for (const cb of this.outputListeners) {
@@ -169,6 +176,7 @@ export class PorticoController {
     }
 
     if (this.reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+      log.error('controller', `reconnect failed after ${MAX_RECONNECT_ATTEMPTS} attempts`)
       this.setConnState('disconnected')
       this.pushStatus('error', `Reconnection failed after ${MAX_RECONNECT_ATTEMPTS} attempts.`)
       this.portForwarder?.destroyAll()
@@ -202,10 +210,16 @@ export class PorticoController {
 
       this.reconnectAttempt = 0
       this.setConnState('connected')
+      log.info('controller', 'reconnected', redactTarget(this.target))
       this.pushStatus('info', `Reconnected to ${this.target.user}@${this.target.host}.`, 5000)
-    } catch {
+    } catch (e) {
       const delayMs = Math.min(30_000, 1000 * Math.pow(2, this.reconnectAttempt - 1))
       const delaySec = Math.round(delayMs / 1000)
+      log.warn('controller', `reconnect attempt ${this.reconnectAttempt}/${MAX_RECONNECT_ATTEMPTS} failed`, {
+        ...redactTarget(this.target!),
+        nextRetryInSec: delaySec,
+        err: e as Error
+      })
 
       this.pushStatus(
         'warn',
@@ -292,6 +306,7 @@ export class PorticoController {
       const placeholder = this.addShelfPlaceholder()
 
       const { blob } = await uploadBlob(this.session, img)
+      log.info('controller', 'image uploaded', { hash: blob.hash, bytes: blob.bytes, ext: blob.ext })
 
       const provider = opts.forced ?? this.provider
       const sessionCtx: ProviderSession = {
@@ -309,6 +324,7 @@ export class PorticoController {
       return ok(blob)
     } catch (e) {
       const code = (e as { code?: string }).code ?? 'UPLOAD_FAILED'
+      log.error('controller', 'image upload failed', { code, err: e as Error })
       return err(code, (e as Error).message)
     }
   }
@@ -449,9 +465,11 @@ export class PorticoController {
     try {
       if (!this.session?.isConnected()) return err('NOT_CONNECTED', 'Connect to a host first.')
       const deleted = await this.session.deleteFilesIn(PORTICO_REMOTE_DIR, () => true)
+      log.info('controller', 'cleared remote cache', { deleted, dir: PORTICO_REMOTE_DIR })
       this.pushStatus('info', `Cleared ${deleted} blob(s) from ${PORTICO_REMOTE_DIR}.`)
       return ok({ deleted })
     } catch (e) {
+      log.error('controller', 'clear remote cache failed', { err: e as Error })
       return err('CACHE_CLEAR_FAILED', (e as Error).message)
     }
   }

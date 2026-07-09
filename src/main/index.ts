@@ -25,8 +25,10 @@ import type {
 } from '@shared/types.js'
 import { PorticoController } from './portico-controller.js'
 import { UpdateService } from './update-service.js'
+import { getLogger } from './logger.js'
 
 const __dirname = join(fileURLToPath(import.meta.url), '..')
+const log = getLogger()
 
 // ---- runtime isolation by release channel --------------------------------
 // Beta must be a fully independent app: different display name, different
@@ -38,6 +40,37 @@ if (RELEASE_CHANNEL === 'beta') {
   // Force a distinct userData path keyed off the app name. Without this, two
   // builds with different appId could still land in the same default dir.
   app.setPath('userData', join(app.getPath('appData'), APP_NAME.beta))
+}
+
+// ---- global crash guards -------------------------------------------------
+// Catch anything that escapes the normal control flow so a bug becomes a
+// diagnostic log line instead of a silent process death.
+process.on('uncaughtException', (err) => {
+  log.error('app', 'uncaughtException', { err })
+})
+process.on('unhandledRejection', (reason) => {
+  log.error('app', 'unhandledRejection', { err: reason instanceof Error ? reason : String(reason) })
+})
+
+// Emit a startup banner once, after the channel/name has been settled so the
+// log dir reflects the right app identity.
+log.info('app', 'starting Portico', {
+  channel: RELEASE_CHANNEL,
+  version: app.getVersion(),
+  platform: process.platform,
+  arch: process.arch,
+  packaged: (() => {
+    try {
+      return app.isPackaged
+    } catch {
+      return false
+    }
+  })()
+})
+try {
+  log.info('app', 'log path resolved', { path: app.getPath('logs') })
+} catch {
+  /* logs path not resolvable in this env — console-only */
 }
 
 let mainWindow: BrowserWindow | null = null
@@ -76,6 +109,7 @@ function createWindow(): BrowserWindow {
 }
 
 app.whenReady().then(() => {
+  log.info('app', 'ready, creating window')
   mainWindow = createWindow()
   controller = new PorticoController(() => mainWindow)
 
@@ -111,16 +145,44 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
+  log.info('app', 'all windows closed')
   updates?.dispose()
   if (process.platform !== 'darwin') app.quit()
 })
 
 /** Register every IPC channel against the controller. */
 function registerIpc(c: PorticoController): void {
+  // Wrap handlers so any returned Result.err is logged once for diagnosis,
+  // without leaking into the renderer. Thrown errors are logged and re-thrown
+  // so the existing error semantics are unchanged.
+  const logIfError = (ch: string, r: unknown): void => {
+    if (r && typeof r === 'object' && 'ok' in r && (r as { ok: unknown }).ok === false) {
+      const error = (r as { error?: { code?: string; message?: string } }).error
+      if (error) log.warn('ipc', `handler error: ${ch}`, error)
+    }
+  }
   const handle = <T>(ch: string, fn: () => T | Promise<T>) =>
-    ipcMain.handle(ch, () => fn())
+    ipcMain.handle(ch, async () => {
+      try {
+        const r = await fn()
+        logIfError(ch, r)
+        return r
+      } catch (e) {
+        log.error('ipc', `handler threw: ${ch}`, { err: e as Error })
+        throw e
+      }
+    })
   const handleArg = <A, T>(ch: string, fn: (a: A) => T | Promise<T>) =>
-    ipcMain.handle(ch, (_e, a: A) => fn(a))
+    ipcMain.handle(ch, async (_e, a: A) => {
+      try {
+        const r = await fn(a)
+        logIfError(ch, r)
+        return r
+      } catch (e) {
+        log.error('ipc', `handler threw: ${ch}`, { err: e as Error })
+        throw e
+      }
+    })
 
   // Connection
   handleArg<SshTarget, Result<ConnectResult>>(IPC.CONNECT, (t) => c.connect(t))
