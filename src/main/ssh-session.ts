@@ -17,10 +17,18 @@
 import { Client, type ClientChannel, type SFTPWrapper } from 'ssh2'
 import { EventEmitter } from 'node:events'
 import { basename } from 'node:path'
+import { homedir } from 'node:os'
 import { readFile } from 'node:fs/promises'
 import { PORTICO_REMOTE_DIR } from '@shared/constants.js'
 import type { SshTarget } from '@shared/types.js'
 import { getLogger, redactTarget } from './logger.js'
+
+/** Expand a leading `~` / `~/...` to the local home directory. */
+export function expandHomePath(p: string): string {
+  if (p === '~') return homedir()
+  if (p.startsWith('~/') || p.startsWith('~\\')) return homedir() + p.slice(1)
+  return p
+}
 
 const log = getLogger()
 
@@ -77,8 +85,9 @@ export class SshSession extends EventEmitter {
     // key material directly rather than a path it may not resolve the same way.
     let privateKey: Buffer | undefined
     if (t.privateKeyPath) {
+      const keyPath = expandHomePath(t.privateKeyPath)
       try {
-        privateKey = await readFile(t.privateKeyPath)
+        privateKey = await readFile(keyPath)
       } catch (e) {
         throw Object.assign(new Error(`Cannot read private key: ${(e as Error).message}`), {
           code: 'SSH_KEY'

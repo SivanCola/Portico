@@ -119,6 +119,10 @@ describe('UpdateService — packaged', () => {
     const svc = new UpdateService({ startupDelayMs: 100000 }) // avoid the auto-check
     await svc.init()
 
+    // Both channels auto-download so "available" progresses to a real download.
+    expect(fakeUpdater.autoDownload).toBe(true)
+    expect(fakeUpdater.autoInstallOnAppQuit).toBe(true)
+
     // The handlers we care about were subscribed.
     const events = fakeUpdater.on.mock.calls.map((c) => c[0])
     for (const ev of [
@@ -206,5 +210,20 @@ describe('UpdateService — packaged', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('init after dispose re-wires the updater (macOS window recreate)', async () => {
+    setIsPackaged(true)
+    const { UpdateService } = await import('./update-service.js')
+    const svc = new UpdateService({ startupDelayMs: 100000 })
+    await svc.init()
+    expect(fakeUpdater.on).toHaveBeenCalled()
+
+    svc.dispose()
+    // Simulate a fresh electron-updater instance after recreate.
+    fakeUpdater = makeFakeUpdater()
+    await svc.init()
+    expect(fakeUpdater.autoDownload).toBe(true)
+    expect(fakeUpdater.on).toHaveBeenCalled()
   })
 })

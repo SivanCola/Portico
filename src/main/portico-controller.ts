@@ -12,6 +12,7 @@ import type {
 } from '@shared/ipc.js'
 import type {
   ConnectionState,
+  NormalizedImage,
   PortForwardRule,
   PortForwardStatus,
   ProviderId,
@@ -298,14 +299,17 @@ export class PorticoController {
     forced?: ProviderId
     inject: boolean
   }): Promise<Result<UploadedBlob>> {
+    let placeholderId: string | null = null
     try {
       if (!this.session?.isConnected()) return err('NOT_CONNECTED', 'Connect to a host first.')
       const img = await readClipboardImage()
       if (!img) return err('NO_IMAGE', 'No image on the clipboard.')
 
-      const placeholder = this.addShelfPlaceholder()
+      const previewUrl = previewDataUrl(img)
+      placeholderId = this.addShelfPlaceholder(previewUrl)
 
       const { blob } = await uploadBlob(this.session, img)
+      const withPreview: UploadedBlob = { ...blob, previewUrl }
       log.info('controller', 'image uploaded', { hash: blob.hash, bytes: blob.bytes, ext: blob.ext })
 
       const provider = opts.forced ?? this.provider
@@ -314,18 +318,20 @@ export class PorticoController {
         interactive: this.interactive,
         nativePasteAvailable: false
       }
-      const fragment = formatForProvider(provider, blob.remotePath, opts.prompt, sessionCtx)
+      const fragment = formatForProvider(provider, withPreview.remotePath, opts.prompt, sessionCtx)
 
       if (opts.inject) {
         this.inject(fragment)
       }
 
-      this.commitShelfPlaceholder(placeholder, blob, opts.prompt)
-      return ok(blob)
+      this.commitShelfPlaceholder(placeholderId, withPreview, opts.prompt)
+      return ok(withPreview)
     } catch (e) {
       const code = (e as { code?: string }).code ?? 'UPLOAD_FAILED'
+      const message = (e as Error).message
       log.error('controller', 'image upload failed', { code, err: e as Error })
-      return err(code, (e as Error).message)
+      if (placeholderId) this.failShelfPlaceholder(placeholderId, message)
+      return err(code, message)
     }
   }
 
@@ -376,6 +382,9 @@ export class PorticoController {
       recentOutput: this.session?.recentOutput() ?? [],
       currentLine: ''
     })
+    // Apply the detection so subsequent pastes use the new provider.
+    this.provider = detected
+    this.providerLocked = true
     return ok(detected)
   }
 
@@ -422,7 +431,7 @@ export class PorticoController {
     return ok(true)
   }
 
-  private addShelfPlaceholder(): string {
+  private addShelfPlaceholder(previewUrl?: string): string {
     const id = randomUUID()
     const item: ShelfItem = {
       id,
@@ -431,7 +440,8 @@ export class PorticoController {
       ext: 'png',
       bytes: 0,
       status: 'uploading',
-      uploadedAt: new Date().toISOString()
+      uploadedAt: new Date().toISOString(),
+      previewUrl
     }
     this.shelf.unshift(item)
     this.emitShelf(item)
@@ -449,7 +459,19 @@ export class PorticoController {
       bytes: blob.bytes,
       prompt,
       status: 'ready',
-      previewUrl: blob.previewUrl
+      previewUrl: blob.previewUrl ?? this.shelf[idx].previewUrl
+    }
+    this.shelf[idx] = updated
+    this.emitShelf(updated)
+  }
+
+  private failShelfPlaceholder(id: string, message: string): void {
+    const idx = this.shelf.findIndex((i) => i.id === id)
+    if (idx === -1) return
+    const updated: ShelfItem = {
+      ...this.shelf[idx],
+      status: 'failed',
+      error: message
     }
     this.shelf[idx] = updated
     this.emitShelf(updated)
@@ -492,6 +514,11 @@ export class PorticoController {
       })
     }
   }
+}
+
+/** Build a data-URL preview from normalized image bytes for the shelf thumbnail. */
+function previewDataUrl(img: NormalizedImage): string {
+  return `data:${img.mime};base64,${img.data.toString('base64')}`
 }
 
 export type { PorticoApi }

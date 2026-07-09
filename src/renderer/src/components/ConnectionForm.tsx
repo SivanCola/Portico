@@ -169,12 +169,24 @@ export function ConnectionForm({ onConnect }: Props) {
         <>
           <div className="field">
             <label>Private key path</label>
-            <input
-              value={privateKeyPath}
-              onChange={(e) => setPrivateKeyPath(e.target.value)}
-              placeholder="~/.ssh/id_ed25519"
-              spellCheck={false}
-            />
+            <div className="path-row">
+              <input
+                value={privateKeyPath}
+                onChange={(e) => setPrivateKeyPath(e.target.value)}
+                placeholder="~/.ssh/id_ed25519"
+                spellCheck={false}
+              />
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={async () => {
+                  const r = await window.portico.pickPrivateKey()
+                  if (r.ok && r.value) setPrivateKeyPath(r.value)
+                }}
+              >
+                Browse…
+              </button>
+            </div>
           </div>
           <div className="field">
             <label>Passphrase (optional)</label>

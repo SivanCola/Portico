@@ -73,7 +73,9 @@ const api: PorticoApi = {
     const h = (_e: IpcRendererEvent, s: UpdateStatus) => cb(s)
     ipcRenderer.on(IPC.UPDATE_STATUS, h)
     return () => ipcRenderer.removeListener(IPC.UPDATE_STATUS, h)
-  }
+  },
+  // File pickers
+  pickPrivateKey: () => ipcRenderer.invoke(IPC.PICK_PRIVATE_KEY)
 }
 
 contextBridge.exposeInMainWorld('portico', api)

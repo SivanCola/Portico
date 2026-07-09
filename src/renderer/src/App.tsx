@@ -246,7 +246,8 @@ export function App() {
         e.preventDefault()
         setPaletteOpen((o) => !o)
       } else if (meta && e.shiftKey && e.key.toLowerCase() === 'v') {
-        if (isActive) {
+        // Align with palette: only paste when fully connected (not reconnecting).
+        if (connState === 'connected') {
           e.preventDefault()
           void pasteImage()
         }
@@ -254,7 +255,7 @@ export function App() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [isActive, pasteImage])
+  }, [connState, pasteImage])
 
   // ---- palette actions -----------------------------------------------------
   const actions = useMemo<PaletteAction[]>(
@@ -280,7 +281,13 @@ export function App() {
         enabled: connState === 'connected',
         run: async () => {
           const r = await window.portico.detectProvider()
-          if (r.ok) pushStatus({ level: 'info', message: `Detected: ${r.value}`, ttlMs: 3000 })
+          if (!r.ok) {
+            pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
+            return
+          }
+          // Apply detection so subsequent pastes use the new provider.
+          await setProvider(r.value)
+          pushStatus({ level: 'info', message: `Provider set to ${r.value}`, ttlMs: 3000 })
         }
       },
       {
@@ -321,6 +328,7 @@ export function App() {
       installUpdate,
       disconnect,
       pushStatus,
+      setProvider,
       updateStatus?.state
     ]
   )
@@ -347,13 +355,16 @@ export function App() {
                   <span>
                     Connection lost. Reconnecting (attempt {reconnectInfo.attempt}/10)
                     {reconnectInfo.nextRetryIn != null && `... next retry in ${reconnectInfo.nextRetryIn}s`}
+                    {' · '}Paste image disabled until reconnected.
                   </span>
                   <button className="btn ghost" onClick={cancelReconnect}>Cancel</button>
                 </div>
               )}
               <div className="term-toolbar">
                 <span className="kbd">⌘⇧V</span>
-                <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>paste image</span>
+                <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>
+                  {connState === 'connected' ? 'paste image' : 'paste image (unavailable while reconnecting)'}
+                </span>
                 <span style={{ flex: 1 }} />
                 <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>
                   Provider:{' '}
@@ -461,7 +472,11 @@ function UpdateBanner({ status, onInstall }: UpdateBannerProps) {
       message = 'Checking for updates…'
       break
     case 'available':
-      message = status.version ? `Update ${status.version} available — downloading…` : 'Update available — downloading…'
+      // With autoDownload=true this is a brief transitional state before
+      // download-progress; avoid implying a stuck fake download.
+      message = status.version
+        ? `Update ${status.version} available — starting download…`
+        : 'Update available — starting download…'
       break
     case 'downloading':
       message =

@@ -225,6 +225,18 @@ select {
 .connect-card .row > * {
   flex: 1;
 }
+.connect-card .path-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.connect-card .path-row input {
+  flex: 1;
+  min-width: 0;
+}
+.connect-card .path-row .btn {
+  flex-shrink: 0;
+}
 .connect-card .auth-toggle {
   display: flex;
   gap: 6px;

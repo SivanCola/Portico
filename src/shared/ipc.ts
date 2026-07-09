@@ -71,7 +71,10 @@ export const IPC = {
   GET_APP_INFO: 'portico:appInfo',
   CHECK_FOR_UPDATES: 'portico:updates:check',
   INSTALL_UPDATE: 'portico:updates:install',
-  UPDATE_STATUS: 'portico:updates:status'
+  UPDATE_STATUS: 'portico:updates:status',
+
+  // File pickers
+  PICK_PRIVATE_KEY: 'portico:dialog:pickPrivateKey'
 } as const
 
 /** Args passed to PASTE_IMAGE. */
@@ -156,4 +159,8 @@ export interface PorticoApi {
   checkForUpdates(): Promise<Result<UpdateStatus>>
   installUpdate(): Promise<Result<true>>
   onUpdateStatus(cb: (s: UpdateStatus) => void): () => void
+
+  // File pickers
+  /** Open a native dialog to pick an SSH private key; null if cancelled. */
+  pickPrivateKey(): Promise<Result<string | null>>
 }

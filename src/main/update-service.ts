@@ -5,7 +5,7 @@
  * directly. Responsibilities:
  *
  *   - Configure the feed per compile-time release channel (stable -> latest,
- *     no prereleases; beta -> beta, prereleases + auto-download).
+ *     no prereleases; beta -> beta + prereleases). Both channels auto-download.
  *   - Only run when packaged; in dev, manual checks return a friendly message.
  *   - Translate electron-updater events into the app's `UpdateStatus` shape and
  *     fan them out to listeners (which index.ts forwards to the renderer).
@@ -15,14 +15,9 @@
  * module in dev (or unit tests) has no side effects.
  */
 import { app } from 'electron'
-import {
-  RELEASE_CHANNEL,
-  allowPrerelease,
-  updateChannel
-} from '@shared/channel.js'
+import { allowPrerelease, updateChannel } from '@shared/channel.js'
 import { ok, err } from '@shared/result.js'
-import type { Result } from '@shared/types.js'
-import type { UpdateState, UpdateStatus } from '@shared/types.js'
+import type { Result, UpdateStatus } from '@shared/types.js'
 import { getLogger } from './logger.js'
 
 const log = getLogger()
@@ -68,12 +63,16 @@ export class UpdateService {
       log.info('updater', 'updates disabled in dev')
       return
     }
+    // Idempotent: skip if already wired (e.g. activate after a no-op dispose).
+    if (this.autoUpdater) return
 
     const mod = await import('electron-updater')
     const autoUpdater = mod.autoUpdater as AutoUpdater
     this.autoUpdater = autoUpdater
 
-    autoUpdater.autoDownload = RELEASE_CHANNEL === 'beta'
+    // Auto-download on both channels so "available" immediately progresses to
+    // a real download (stable previously left users stuck on a fake "downloading…" UI).
+    autoUpdater.autoDownload = true
     autoUpdater.autoInstallOnAppQuit = true
     autoUpdater.allowPrerelease = allowPrerelease()
     autoUpdater.channel = updateChannel()
@@ -119,12 +118,14 @@ export class UpdateService {
     }, delay)
   }
 
-  /** Tear down timers (called on app quit). */
+  /** Tear down timers (called when all windows close / app quit). */
   dispose(): void {
     if (this.startupTimer) {
       clearTimeout(this.startupTimer)
       this.startupTimer = null
     }
+    // Drop the updater handle so a later init() (macOS activate) can re-wire.
+    this.autoUpdater = null
   }
 
   /**

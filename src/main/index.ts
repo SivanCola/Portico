@@ -1,6 +1,7 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { homedir } from 'node:os'
 import { PORTICO_REMOTE_DIR } from '@shared/constants.js'
 import {
   APP_NAME,
@@ -99,6 +100,11 @@ function createWindow(): BrowserWindow {
     return { action: 'deny' }
   })
 
+  // Drop the stale reference when this window closes so activate can recreate.
+  win.on('closed', () => {
+    if (mainWindow === win) mainWindow = null
+  })
+
   // electron-vite dev server in DEV; built file in PROD.
   if (process.env['ELECTRON_RENDERER_URL']) {
     void win.loadURL(process.env['ELECTRON_RENDERER_URL'])
@@ -108,12 +114,24 @@ function createWindow(): BrowserWindow {
   return win
 }
 
+/** Ensure the auto-updater is alive (re-init after macOS window-all-closed dispose). */
+function ensureUpdates(): void {
+  if (!updates) {
+    updates = new UpdateService()
+    updates.listeners.add((s: UpdateStatus) =>
+      mainWindow?.webContents.send(IPC.UPDATE_STATUS, s)
+    )
+  }
+  void updates.init()
+}
+
 app.whenReady().then(() => {
   log.info('app', 'ready, creating window')
   mainWindow = createWindow()
   controller = new PorticoController(() => mainWindow)
 
   // Forward controller events to the renderer over one-way channels.
+  // Closures always read the current `mainWindow`, so recreate-on-activate works.
   controller.outputListeners.add((data) =>
     mainWindow?.webContents.send(IPC.TERM_OUTPUT, data)
   )
@@ -133,20 +151,21 @@ app.whenReady().then(() => {
   registerIpc(controller)
 
   // ---- auto-updater -----------------------------------------------------
-  updates = new UpdateService()
-  updates.listeners.add((s: UpdateStatus) =>
-    mainWindow?.webContents.send(IPC.UPDATE_STATUS, s)
-  )
-  void updates.init()
+  ensureUpdates()
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    if (BrowserWindow.getAllWindows().length === 0) {
+      mainWindow = createWindow()
+      // On macOS, window-all-closed disposed the updater without quitting.
+      ensureUpdates()
+    }
   })
 })
 
 app.on('window-all-closed', () => {
   log.info('app', 'all windows closed')
   updates?.dispose()
+  updates = null
   if (process.platform !== 'darwin') app.quit()
 })
 
@@ -228,6 +247,22 @@ function registerIpc(c: PorticoController): void {
   handle(IPC.GET_APP_INFO, getAppInfo)
   handle(IPC.CHECK_FOR_UPDATES, () => (updates ? updates.checkForUpdates() : ok({ state: 'not-available' as const, message: 'Updates are disabled.' })))
   handle(IPC.INSTALL_UPDATE, () => (updates ? updates.installUpdate() : ok(true)))
+
+  // Private-key file picker (ConnectionForm Browse button)
+  handle(IPC.PICK_PRIVATE_KEY, async () => {
+    const opts = {
+      title: 'Select SSH private key',
+      defaultPath: join(homedir(), '.ssh'),
+      properties: ['openFile' as const]
+    }
+    const result = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, opts)
+      : await dialog.showOpenDialog(opts)
+    if (result.canceled || result.filePaths.length === 0) {
+      return ok(null as string | null)
+    }
+    return ok(result.filePaths[0] as string)
+  })
 }
 
 /** Static app identity for the renderer (name, version, channels, packaged). */
