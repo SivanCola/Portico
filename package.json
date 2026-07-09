@@ -19,11 +19,11 @@
     "test:watch": "vitest",
     "start": "electron-vite preview",
     "pack": "npm run pack:stable",
-    "pack:stable": "cross-env PORTICO_RELEASE_CHANNEL=stable electron-vite build && electron-builder --config electron-builder.config.cjs --dir",
-    "pack:beta": "cross-env PORTICO_RELEASE_CHANNEL=beta electron-vite build && electron-builder --config electron-builder.config.cjs --dir",
+    "pack:stable": "cross-env PORTICO_RELEASE_CHANNEL=stable electron-vite build && cross-env PORTICO_RELEASE_CHANNEL=stable electron-builder --config electron-builder.config.cjs --dir",
+    "pack:beta": "cross-env PORTICO_RELEASE_CHANNEL=beta electron-vite build && cross-env PORTICO_RELEASE_CHANNEL=beta electron-builder --config electron-builder.config.cjs --dir",
     "dist": "npm run dist:stable",
-    "dist:stable": "cross-env PORTICO_RELEASE_CHANNEL=stable electron-vite build && electron-builder --config electron-builder.config.cjs",
-    "dist:beta": "cross-env PORTICO_RELEASE_CHANNEL=beta electron-vite build && electron-builder --config electron-builder.config.cjs"
+    "dist:stable": "cross-env PORTICO_RELEASE_CHANNEL=stable electron-vite build && cross-env PORTICO_RELEASE_CHANNEL=stable electron-builder --config electron-builder.config.cjs",
+    "dist:beta": "cross-env PORTICO_RELEASE_CHANNEL=beta electron-vite build && cross-env PORTICO_RELEASE_CHANNEL=beta electron-builder --config electron-builder.config.cjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
