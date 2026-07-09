@@ -70,8 +70,18 @@ export class UpdateService {
     // Idempotent: skip if already wired (e.g. activate after a no-op dispose).
     if (this.autoUpdater) return
 
-    const mod = await import('electron-updater')
-    const autoUpdater = mod.autoUpdater as AutoUpdater
+    const mod = (await import('electron-updater')) as {
+      autoUpdater?: AutoUpdater
+      default?: { autoUpdater?: AutoUpdater }
+    }
+    // electron-updater ships as CommonJS. Under our ESM main process the CJS
+    // named export isn't always re-exposed on the dynamic import namespace
+    // (cjs-module-lexer may miss it), so fall back to the default-export shape.
+    const autoUpdater = mod.autoUpdater ?? mod.default?.autoUpdater
+    if (!autoUpdater) {
+      log.error('updater', 'electron-updater did not expose autoUpdater; updates disabled')
+      return
+    }
     this.autoUpdater = autoUpdater
 
     // Auto-download on both channels so "available" immediately progresses to
