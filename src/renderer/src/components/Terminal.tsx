@@ -1,51 +1,169 @@
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
+import { SearchAddon } from '@xterm/addon-search'
+import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
+import type { TerminalSettings } from '../lib/terminal-settings.js'
+import { xtermTheme } from '../lib/terminal-settings.js'
+import { OutputBuffer } from '../lib/output-buffer.js'
+
+interface Props {
+  settings: TerminalSettings
+  /** Open the clipboard-image paste flow (parent owns the dialog). */
+  onPasteImage?: () => void
+}
+
+type CtxMenu = { x: number; y: number } | null
 
 /**
- * xterm.js wrapper. One instance per connected session.
- *  - pipes renderer input -> window.portico.sendInput
- *  - pipes window.portico.onOutput -> terminal.write
- *  - keeps the server's PTY cols/rows in sync via fit + resize
+ * xterm.js wrapper for one connected SSH session.
+ *  - input/output + resize via window.portico
+ *  - themes/fonts from settings
+ *  - WebGL when enabled, search (⌘F), copy-on-select, context menu
  */
-export function Terminal() {
+export function Terminal({ settings, onPasteImage }: Props) {
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<XTerm | null>(null)
+  const fitRef = useRef<FitAddon | null>(null)
+  const searchRef = useRef<SearchAddon | null>(null)
+  const webglRef = useRef<WebglAddon | null>(null)
+  const settingsRef = useRef(settings)
+  settingsRef.current = settings
 
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [ctx, setCtx] = useState<CtxMenu>(null)
+  const searchInputRef = useRef<HTMLInputElement>(null)
+
+  const copySelection = useCallback(async () => {
+    const term = termRef.current
+    if (!term?.hasSelection()) return
+    const text = term.getSelection()
+    if (!text) return
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      /* clipboard permission */
+    }
+  }, [])
+
+  const pasteText = useCallback(async () => {
+    try {
+      const text = await navigator.clipboard.readText()
+      if (text) window.portico.sendInput(text)
+    } catch {
+      /* denied */
+    }
+  }, [])
+
+  // ---- mount terminal once (webgl preference applied at open) ------------
   useEffect(() => {
     const host = hostRef.current
     if (!host) return
 
+    const s = settingsRef.current
     const term = new XTerm({
-      fontFamily:
-        "ui-monospace, 'SF Mono', 'Cascadia Code', 'Fira Code', Menlo, Consolas, monospace",
-      fontSize: 13,
+      fontFamily: s.fontFamily,
+      fontSize: s.fontSize,
+      lineHeight: s.lineHeight,
       cursorBlink: true,
-      scrollback: 5000,
-      allowProposedApi: true
+      scrollback: s.scrollback,
+      allowProposedApi: true,
+      theme: xtermTheme(s.themeId),
+      macOptionIsMeta: false
     })
     const fit = new FitAddon()
+    const search = new SearchAddon()
+    fitRef.current = fit
+    searchRef.current = search
     term.loadAddon(fit)
-    term.loadAddon(new WebLinksAddon())
+    term.loadAddon(search)
+    term.loadAddon(
+      new WebLinksAddon((_event, uri) => {
+        // Open in system browser via temporary anchor (Electron will hand off).
+        window.open(uri, '_blank', 'noopener,noreferrer')
+      })
+    )
     term.open(host)
+
+    if (s.webgl) {
+      try {
+        const webgl = new WebglAddon()
+        webgl.onContextLoss(() => {
+          try {
+            webgl.dispose()
+          } catch {
+            /* ignore */
+          }
+          webglRef.current = null
+        })
+        term.loadAddon(webgl)
+        webglRef.current = webgl
+      } catch {
+        webglRef.current = null
+      }
+    }
+
     try {
       fit.fit()
     } catch {
-      /* container may not be laid out yet */
+      /* layout pending */
     }
     termRef.current = term
     term.focus()
 
-    // Input -> main process
+    // Shortcuts that must not reach the remote PTY.
+    term.attachCustomKeyEventHandler((ev) => {
+      if (ev.type !== 'keydown') return true
+      const meta = ev.metaKey || ev.ctrlKey
+      if (!meta) return true
+
+      const isV = ev.code === 'KeyV' || ev.key.toLowerCase() === 'v'
+      const isC = ev.code === 'KeyC' || ev.key.toLowerCase() === 'c'
+      const isF = ev.code === 'KeyF' || ev.key.toLowerCase() === 'f'
+
+      // ⌘⇧V — paste image (main + App also handle this)
+      if (ev.shiftKey && isV) return false
+
+      // ⌘F — find in scrollback
+      if (!ev.shiftKey && isF) {
+        ev.preventDefault()
+        setSearchOpen(true)
+        requestAnimationFrame(() => searchInputRef.current?.focus())
+        return false
+      }
+
+      // ⌘C — copy selection when present (else let terminal get Ctrl-C)
+      if (!ev.shiftKey && isC && term.hasSelection()) {
+        void navigator.clipboard.writeText(term.getSelection())
+        return false
+      }
+
+      return true
+    })
+
     const inputDisp = term.onData((data) => window.portico.sendInput(data))
 
-    // Output -> terminal
-    const off = window.portico.onOutput((data) => term.write(data))
-
-    // Resize sync: report the fitted geometry to the server PTY.
+    // Coalesce bursty PTY output so large TUI redraws don't stall the UI thread.
+    const outBuf = new OutputBuffer((data) => {
+      try {
+        term.write(data)
+      } catch {
+        /* xterm may be disposing */
+      }
+    })
+    const offOutput = window.portico.onOutput((data) => outBuf.push(data))
     const onResize = term.onResize(({ cols, rows }) => window.portico.resize(cols, rows))
+
+    const selDisp = term.onSelectionChange(() => {
+      if (!settingsRef.current.copyOnSelect) return
+      if (!term.hasSelection()) return
+      const text = term.getSelection()
+      if (text) void navigator.clipboard.writeText(text)
+    })
+
     const ro = new ResizeObserver(() => {
       try {
         fit.fit()
@@ -55,22 +173,166 @@ export function Terminal() {
     })
     ro.observe(host)
 
-    // Send the initial size once, after mount.
     window.portico.resize(term.cols, term.rows)
 
+    const onCtx = (e: MouseEvent) => {
+      e.preventDefault()
+      setCtx({ x: e.clientX, y: e.clientY })
+    }
+    host.addEventListener('contextmenu', onCtx)
+
     return () => {
+      host.removeEventListener('contextmenu', onCtx)
       inputDisp.dispose()
       onResize.dispose()
-      off()
+      selDisp.dispose()
+      offOutput()
+      outBuf.dispose()
       ro.disconnect()
+      try {
+        webglRef.current?.dispose()
+      } catch {
+        /* ignore */
+      }
+      webglRef.current = null
       term.dispose()
       termRef.current = null
+      fitRef.current = null
+      searchRef.current = null
     }
-  }, [])
+    // Re-create only when WebGL preference changes (needs new renderer).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.webgl])
+
+  // ---- live-apply appearance when settings change without remount ---------
+  useEffect(() => {
+    const term = termRef.current
+    if (!term) return
+    term.options.fontFamily = settings.fontFamily
+    term.options.fontSize = settings.fontSize
+    term.options.lineHeight = settings.lineHeight
+    term.options.scrollback = settings.scrollback
+    term.options.theme = xtermTheme(settings.themeId)
+    try {
+      fitRef.current?.fit()
+    } catch {
+      /* ignore */
+    }
+  }, [
+    settings.fontFamily,
+    settings.fontSize,
+    settings.lineHeight,
+    settings.scrollback,
+    settings.themeId
+  ])
+
+  // Focus search field when opened.
+  useEffect(() => {
+    if (searchOpen) requestAnimationFrame(() => searchInputRef.current?.select())
+  }, [searchOpen])
+
+  const runSearch = (dir: 'next' | 'prev') => {
+    const search = searchRef.current
+    if (!search || !searchQuery) return
+    if (dir === 'next') search.findNext(searchQuery)
+    else search.findPrevious(searchQuery)
+  }
+
+  const closeCtx = () => setCtx(null)
 
   return (
     <div className="term-host">
+      {searchOpen && (
+        <div className="term-search-bar">
+          <input
+            ref={searchInputRef}
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                runSearch(e.shiftKey ? 'prev' : 'next')
+              } else if (e.key === 'Escape') {
+                e.preventDefault()
+                setSearchOpen(false)
+                termRef.current?.focus()
+              }
+            }}
+            placeholder="Find in terminal…"
+            spellCheck={false}
+          />
+          <button type="button" className="btn ghost" onClick={() => runSearch('prev')} title="Previous">
+            ↑
+          </button>
+          <button type="button" className="btn ghost" onClick={() => runSearch('next')} title="Next">
+            ↓
+          </button>
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={() => {
+              setSearchOpen(false)
+              termRef.current?.focus()
+            }}
+          >
+            Esc
+          </button>
+        </div>
+      )}
       <div ref={hostRef} className="xterm" />
+
+      {ctx && (
+        <>
+          <div className="term-ctx-backdrop" onClick={closeCtx} onContextMenu={(e) => e.preventDefault()} />
+          <div
+            className="term-ctx-menu"
+            style={{ left: ctx.x, top: ctx.y }}
+            role="menu"
+          >
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!termRef.current?.hasSelection()}
+              onClick={() => {
+                void copySelection()
+                closeCtx()
+              }}
+            >
+              Copy
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                void pasteText()
+                closeCtx()
+              }}
+            >
+              Paste
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                closeCtx()
+                onPasteImage?.()
+              }}
+            >
+              Paste image…
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                closeCtx()
+                setSearchOpen(true)
+              }}
+            >
+              Find…
+            </button>
+          </div>
+        </>
+      )}
     </div>
   )
 }

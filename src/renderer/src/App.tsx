@@ -17,6 +17,20 @@ import { ImageShelf } from './components/ImageShelf.js'
 import { PortForwards } from './components/PortForwards.js'
 import { CommandPalette, type PaletteAction } from './components/CommandPalette.js'
 import { PastePromptDialog } from './components/PastePromptDialog.js'
+import { SettingsCenter, type SettingsSection } from './components/SettingsCenter.js'
+import {
+  loadTerminalSettings,
+  saveTerminalSettings,
+  type TerminalSettings
+} from './lib/terminal-settings.js'
+import {
+  loadAppSettings,
+  saveAppSettings,
+  normalizeAppSettings,
+  toFeatureFlags,
+  toTmuxPrefs,
+  type AppSettings
+} from './lib/app-settings.js'
 
 type ConnInfo = { user: string; host: string; alias?: string } | null
 type PromptMode = { kind: 'clipboard' } | { kind: 'file'; path: string } | null
@@ -35,7 +49,45 @@ export function App() {
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null)
   const [promptMode, setPromptMode] = useState<PromptMode>(null)
   const [dragOver, setDragOver] = useState(false)
+  const [termSettings, setTermSettings] = useState<TerminalSettings>(() => loadTerminalSettings())
+  const [appSettings, setAppSettings] = useState<AppSettings>(() => loadAppSettings())
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>('general')
   const statusTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const updateTermSettings = useCallback((next: TerminalSettings) => {
+    setTermSettings(next)
+    saveTerminalSettings(next)
+  }, [])
+
+  const syncMainPrefs = useCallback(async (s: AppSettings) => {
+    try {
+      await window.portico.setFeatureFlags(toFeatureFlags(s))
+      await window.portico.setTmuxPrefs(toTmuxPrefs(s))
+    } catch {
+      /* main may not be ready yet */
+    }
+  }, [])
+
+  const updateAppSettings = useCallback(
+    (next: AppSettings) => {
+      const normalized = normalizeAppSettings(next)
+      setAppSettings(normalized)
+      saveAppSettings(normalized)
+      void syncMainPrefs(normalized)
+    },
+    [syncMainPrefs]
+  )
+
+  // Push flags + tmux prefs once on mount so main matches saved settings.
+  useEffect(() => {
+    void syncMainPrefs(loadAppSettings())
+  }, [syncMainPrefs])
+
+  const openSettings = useCallback((section: SettingsSection = 'general') => {
+    setSettingsSection(section)
+    setSettingsOpen(true)
+  }, [])
 
   const isActive = connState === 'connected' || connState === 'connecting' || connState === 'reconnecting'
 
@@ -189,28 +241,85 @@ export function App() {
   )
 
   // ---- image actions -------------------------------------------------------
-  const openPastePrompt = useCallback(() => {
-    if (connState !== 'connected') return
+  const runUpload = useCallback(
+    async (mode: PromptMode, prompt: string) => {
+      if (!mode) return
+      if (mode.kind === 'clipboard') {
+        const r = await window.portico.pasteImage({ prompt })
+        if (!r.ok) pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
+        else pushStatus({ level: 'info', message: `Pasted → ${r.value.remotePath}`, ttlMs: 4000 })
+      } else {
+        const r = await window.portico.uploadLocalImage({
+          path: mode.path,
+          prompt,
+          inject: true
+        })
+        if (!r.ok) pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
+        else pushStatus({ level: 'info', message: `Pasted → ${r.value.remotePath}`, ttlMs: 4000 })
+      }
+    },
+    [pushStatus]
+  )
+
+  const openPastePrompt = useCallback(async () => {
+    if (!appSettings.enableImageBridge) {
+      pushStatus({
+        level: 'warn',
+        message: 'Image bridge is disabled. Turn off Terminal only mode in Settings.',
+        ttlMs: 5000
+      })
+      return
+    }
+    if (connState !== 'connected') {
+      pushStatus({
+        level: 'warn',
+        message: 'Connect to a host before pasting an image.',
+        ttlMs: 4000
+      })
+      return
+    }
+    try {
+      const has = await window.portico.clipboardHasImage()
+      if (has.ok && !has.value) {
+        pushStatus({
+          level: 'warn',
+          message: 'No image in clipboard. Copy a screenshot or image first, then ⌘⇧V.',
+          ttlMs: 5000
+        })
+        return
+      }
+    } catch {
+      /* main will surface NO_IMAGE on upload */
+    }
+    if (appSettings.skipPastePrompt) {
+      await runUpload({ kind: 'clipboard' }, appSettings.defaultPastePrompt)
+      return
+    }
     setPromptMode({ kind: 'clipboard' })
-  }, [connState])
+  }, [connState, pushStatus, appSettings, runUpload, appSettings.enableImageBridge])
 
   const runPasteWithPrompt = useCallback(
     async (prompt: string) => {
       const mode = promptMode
       setPromptMode(null)
       if (!mode) return
-      if (mode.kind === 'clipboard') {
-        const r = await window.portico.pasteImage({ prompt })
-        if (!r.ok) pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
-      } else {
-        const r = await window.portico.uploadLocalImage({ path: mode.path, prompt, inject: true })
-        if (!r.ok) pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
-      }
+      await runUpload(mode, prompt || appSettings.defaultPastePrompt)
     },
-    [promptMode, pushStatus]
+    [promptMode, runUpload, appSettings.defaultPastePrompt]
   )
 
   const pasteImage = openPastePrompt
+
+  const beginFileUpload = useCallback(
+    async (path: string) => {
+      if (appSettings.skipPastePrompt) {
+        await runUpload({ kind: 'file', path }, appSettings.defaultPastePrompt)
+        return
+      }
+      setPromptMode({ kind: 'file', path })
+    },
+    [appSettings, runUpload]
+  )
 
   const uploadClipboard = useCallback(async () => {
     const r = await window.portico.uploadClipboard()
@@ -222,8 +331,8 @@ export function App() {
     if (connState !== 'connected') return
     const r = await window.portico.pickImageFile()
     if (!r.ok || !r.value) return
-    setPromptMode({ kind: 'file', path: r.value })
-  }, [connState])
+    await beginFileUpload(r.value)
+  }, [connState, beginFileUpload])
 
   const repaste = useCallback(
     async (item: ShelfItem) => {
@@ -237,14 +346,10 @@ export function App() {
     (item: ShelfItem) => {
       void window.portico.shelfRemove(item.id)
       setShelf((prev) => prev.filter((i) => i.id !== item.id))
-      // Re-open the same source: file path when known, otherwise clipboard.
-      if (item.sourcePath) {
-        setPromptMode({ kind: 'file', path: item.sourcePath })
-      } else {
-        setPromptMode({ kind: 'clipboard' })
-      }
+      if (item.sourcePath) void beginFileUpload(item.sourcePath)
+      else void pasteImage()
     },
-    []
+    [beginFileUpload, pasteImage]
   )
 
   const removeShelfItem = useCallback(async (item: ShelfItem) => {
@@ -293,7 +398,7 @@ export function App() {
         pushStatus({ level: 'error', message: 'Could not resolve dropped file path.', ttlMs: 4000 })
         return
       }
-      setPromptMode({ kind: 'file', path })
+      void beginFileUpload(path)
     }
     window.addEventListener('dragover', onDragOver)
     window.addEventListener('dragleave', onDragLeave)
@@ -303,7 +408,7 @@ export function App() {
       window.removeEventListener('dragleave', onDragLeave)
       window.removeEventListener('drop', onDrop)
     }
-  }, [connState, pushStatus])
+  }, [connState, pushStatus, beginFileUpload])
 
   const focusTerminal = useCallback(() => {
     document.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')?.focus()
@@ -315,10 +420,16 @@ export function App() {
   }, [focusTerminal])
 
   const clearRemoteCache = useCallback(async () => {
+    if (appSettings.confirmClearCache) {
+      const ok = window.confirm(
+        'Delete every uploaded image blob on the remote host (~/.portico*/blobs)? This cannot be undone.'
+      )
+      if (!ok) return
+    }
     const r = await window.portico.clearRemoteCache()
     if (r.ok) pushStatus({ level: 'info', message: `Cleared ${r.value.deleted} blob(s).`, ttlMs: 4000 })
     else pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
-  }, [pushStatus])
+  }, [pushStatus, appSettings.confirmClearCache])
 
   // ---- auto-update actions -------------------------------------------------
   const checkForUpdates = useCallback(async () => {
@@ -334,24 +445,46 @@ export function App() {
     if (!r.ok) pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
   }, [pushStatus])
 
-  // ---- global shortcuts: ⌘⇧P palette, ⌘⇧V paste image ----------------------
+  // ---- global shortcuts: ⌘, settings · ⌘⇧P palette · paste from main ------
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const meta = e.metaKey || e.ctrlKey
-      if (meta && e.shiftKey && e.key.toLowerCase() === 'p') {
+      if (!meta) return
+      const isP = e.code === 'KeyP' || e.key.toLowerCase() === 'p'
+      const isV = e.code === 'KeyV' || e.key.toLowerCase() === 'v'
+      const isComma = e.code === 'Comma' || e.key === ','
+      // ⌘, — settings center (skip when typing in inputs handled by stop on dialog)
+      if (!e.shiftKey && isComma) {
+        e.preventDefault()
+        openSettings(settingsOpen ? settingsSection : 'general')
+        return
+      }
+      if (e.shiftKey && isP) {
         e.preventDefault()
         setPaletteOpen((o) => !o)
-      } else if (meta && e.shiftKey && e.key.toLowerCase() === 'v') {
-        // Align with palette: only paste when fully connected (not reconnecting).
-        if (connState === 'connected') {
-          e.preventDefault()
-          void pasteImage()
-        }
+      } else if (e.shiftKey && isV) {
+        e.preventDefault()
+        void pasteImage()
       }
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [connState, pasteImage])
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [pasteImage, openSettings, settingsOpen, settingsSection])
+
+  // Main-process menu / before-input accelerators.
+  useEffect(() => {
+    return window.portico.onPasteImageShortcut(() => {
+      void pasteImage()
+    })
+  }, [pasteImage])
+
+  useEffect(() => {
+    return window.portico.onOpenSettings(() => openSettings('general'))
+  }, [openSettings])
+
+  useEffect(() => {
+    return window.portico.onOpenPalette(() => setPaletteOpen((o) => !o))
+  }, [])
 
   // ---- palette actions -----------------------------------------------------
   const actions = useMemo<PaletteAction[]>(
@@ -400,6 +533,71 @@ export function App() {
         run: clearRemoteCache
       },
       {
+        id: 'settings',
+        title: 'Settings…',
+        hint: 'General, terminal, image bridge, about  ·  ⌘,',
+        enabled: true,
+        run: () => openSettings('general')
+      },
+      {
+        id: 'terminal-settings',
+        title: 'Terminal Settings…',
+        hint: 'Theme, font, WebGL, copy-on-select',
+        enabled: true,
+        run: () => openSettings('terminal')
+      },
+      {
+        id: 'tmux-settings',
+        title: 'tmux Settings…',
+        hint: 'Auto-enter remote session after connect',
+        enabled: true,
+        run: () => openSettings('tmux')
+      },
+      {
+        id: 'tmux-enter',
+        title: 'tmux: Enter default session',
+        hint: `Attach or create “${appSettings.tmuxSessionName}”`,
+        enabled: connState === 'connected',
+        run: async () => {
+          const r = await window.portico.enterTmux({
+            mode: 'always',
+            sessionName: appSettings.tmuxSessionName
+          })
+          if (!r.ok) pushStatus({ level: 'warn', message: r.error.message, ttlMs: 5000 })
+        }
+      },
+      {
+        id: 'tmux-list',
+        title: 'tmux: List sessions',
+        hint: 'Show remote tmux sessions in the status bar',
+        enabled: connState === 'connected',
+        run: async () => {
+          const r = await window.portico.listTmuxSessions()
+          if (!r.ok) {
+            pushStatus({ level: 'warn', message: r.error.message, ttlMs: 5000 })
+            return
+          }
+          if (r.value.length === 0) {
+            pushStatus({ level: 'info', message: 'No tmux sessions on remote.', ttlMs: 4000 })
+            return
+          }
+          const summary = r.value
+            .map((s) => `${s.name}(${s.windows}w${s.attached ? ',att' : ''})`)
+            .join(' · ')
+          pushStatus({ level: 'info', message: `tmux: ${summary}`, ttlMs: 8000 })
+        }
+      },
+      {
+        id: 'tmux-new',
+        title: 'tmux: New default session',
+        hint: `tmux new -s ${appSettings.tmuxSessionName}`,
+        enabled: connState === 'connected',
+        run: async () => {
+          const r = await window.portico.enterTmux({ createNew: appSettings.tmuxSessionName })
+          if (!r.ok) pushStatus({ level: 'warn', message: r.error.message, ttlMs: 5000 })
+        }
+      },
+      {
         id: 'check-for-updates',
         title: 'Check for Updates',
         hint: 'Look for a new version on the update channel',
@@ -431,7 +629,10 @@ export function App() {
       installUpdate,
       disconnect,
       pushStatus,
-      updateStatus?.state
+      updateStatus?.state,
+      openSettings,
+      appSettings.tmuxSessionName,
+      pushStatus
     ]
   )
 
@@ -444,6 +645,7 @@ export function App() {
         onProvider={setProvider}
         onDisconnect={disconnect}
         onOpenPalette={() => setPaletteOpen(true)}
+        onOpenSettings={() => openSettings('general')}
         appInfo={appInfo}
       />
       <div className="workspace">
@@ -463,9 +665,24 @@ export function App() {
                 </div>
               )}
               <div className="term-toolbar">
-                <span className="kbd">⌘⇧V</span>
+                {appSettings.enableImageBridge && (
+                  <button
+                    type="button"
+                    className="btn ghost"
+                    style={{ fontSize: 12, padding: '2px 10px' }}
+                    disabled={connState !== 'connected'}
+                    onClick={() => void pasteImage()}
+                    title="Upload clipboard image and inject into the terminal  ·  ⌘⇧V"
+                  >
+                    <span className="kbd">⌘⇧V</span> Paste image
+                  </button>
+                )}
                 <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>
-                  {connState === 'connected' ? 'paste image' : 'paste image (unavailable while reconnecting)'}
+                  {appSettings.terminalOnly
+                    ? 'Terminal only · ⌘F find'
+                    : connState === 'connected'
+                      ? 'or File… / drop · ⌘F find'
+                      : 'unavailable while reconnecting'}
                 </span>
                 <span style={{ flex: 1 }} />
                 <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>
@@ -475,23 +692,46 @@ export function App() {
                   </strong>
                   {session?.provider !== 'shell' ? ' · interactive REPL' : ''}
                 </span>
+                <button
+                  type="button"
+                  className="btn ghost"
+                  style={{ fontSize: 12, padding: '2px 10px' }}
+                  onClick={() => openSettings('terminal')}
+                  title="Settings · Terminal  ·  ⌘,"
+                >
+                  Settings
+                </button>
               </div>
-              <Terminal />
+              <Terminal
+                settings={termSettings}
+                onPasteImage={() => void pasteImage()}
+              />
             </>
           )}
         </div>
         <div className="sidebar">
-          <ImageShelf
-            items={shelf}
-            enabled={connState === 'connected'}
-            onRepaste={repaste}
-            onRetry={retryFailed}
-            onRemove={removeShelfItem}
-            onCopyPath={copyPath}
-            onClear={clearShelf}
-            onPickFile={pickImageFile}
-          />
-          <PortForwards forwards={portForwards} enabled={connState === 'connected'} />
+          {appSettings.enableImageBridge ? (
+            <ImageShelf
+              items={shelf}
+              enabled={connState === 'connected'}
+              onRepaste={repaste}
+              onRetry={retryFailed}
+              onRemove={removeShelfItem}
+              onCopyPath={copyPath}
+              onClear={clearShelf}
+              onPickFile={pickImageFile}
+            />
+          ) : (
+            <div className="sidebar-disabled-note">
+              Image shelf off
+              <button type="button" className="btn ghost" onClick={() => openSettings('general')}>
+                Settings
+              </button>
+            </div>
+          )}
+          {appSettings.enablePortForwards ? (
+            <PortForwards forwards={portForwards} enabled={connState === 'connected'} />
+          ) : null}
         </div>
       </div>
 
@@ -499,8 +739,26 @@ export function App() {
       <PastePromptDialog
         open={!!promptMode}
         title={promptMode?.kind === 'file' ? 'Upload image file' : 'Paste clipboard image'}
+        initialPrompt={appSettings.defaultPastePrompt}
         onCancel={() => setPromptMode(null)}
         onConfirm={(p) => void runPasteWithPrompt(p)}
+      />
+      <SettingsCenter
+        open={settingsOpen}
+        section={settingsSection}
+        onSectionChange={setSettingsSection}
+        onClose={() => {
+          setSettingsOpen(false)
+          focusTerminal()
+        }}
+        termSettings={termSettings}
+        onTermChange={updateTermSettings}
+        appSettings={appSettings}
+        onAppChange={updateAppSettings}
+        appInfo={appInfo}
+        updateStatus={updateStatus}
+        onCheckUpdates={() => void checkForUpdates()}
+        onInstallUpdate={() => void installUpdate()}
       />
       {updateStatus && <UpdateBanner status={updateStatus} onInstall={installUpdate} />}
       {status && <div className={`status-banner ${status.level}`}>{status.message}</div>}
@@ -516,10 +774,20 @@ interface TopBarProps {
   onProvider: (p: ProviderId) => void
   onDisconnect: () => void
   onOpenPalette: () => void
+  onOpenSettings: () => void
   appInfo: AppInfo | null
 }
 
-function TopBar({ connState, connInfo, provider, onProvider, onDisconnect, onOpenPalette, appInfo }: TopBarProps) {
+function TopBar({
+  connState,
+  connInfo,
+  provider,
+  onProvider,
+  onDisconnect,
+  onOpenPalette,
+  onOpenSettings,
+  appInfo
+}: TopBarProps) {
   const dotClass =
     connState === 'connected'
       ? 'live'
@@ -561,6 +829,9 @@ function TopBar({ connState, connInfo, provider, onProvider, onDisconnect, onOpe
           ))}
         </div>
       )}
+      <button className="btn ghost" onClick={onOpenSettings} title="Settings  ·  ⌘,">
+        Settings
+      </button>
       <button className="btn ghost" onClick={onOpenPalette} title="Command palette  ·  ⌘⇧P">
         ⌘⇧P
       </button>

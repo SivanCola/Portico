@@ -4,6 +4,7 @@ import { PORTICO_REMOTE_DIR } from '@shared/constants.js'
 import { detectProvider, formatForProvider } from '@shared/adapters.js'
 import type { PorticoApi } from '@shared/ipc.js'
 import { ok, err } from '@shared/result.js'
+import { transition } from '@shared/session-fsm.js'
 import type {
   PasteImageArgs,
   UploadLocalImageArgs,
@@ -12,7 +13,6 @@ import type {
   StatusPayload
 } from '@shared/ipc.js'
 import type {
-  ConnectPhase,
   ConnectionState,
   NormalizedImage,
   PortForwardRule,
@@ -29,9 +29,41 @@ import { PortForwarder } from './port-forwarder.js'
 import { uploadBlob } from './blob-uploader.js'
 import { clipboardHasImage, readClipboardImage, readImageFile } from './clipboard.js'
 import { getLogger, redactTarget } from './logger.js'
+import {
+  DEFAULT_TMUX_PREFS,
+  buildAttachCommand,
+  buildEnterShellCommand,
+  buildHasTmuxCommand,
+  buildInTmuxCommand,
+  buildListSessionsCommand,
+  buildNewSessionCommand,
+  normalizeTmuxPrefs,
+  parseListSessions,
+  type TmuxPrefs,
+  type TmuxSessionInfo
+} from './tmux.js'
 
 const MAX_RECONNECT_ATTEMPTS = 10
 const log = getLogger()
+
+/** Runtime feature flags — L2 capabilities that must never tear down L0 PTY. */
+export interface FeatureFlags {
+  /** Image paste / SFTP upload bridge. */
+  imageBridge: boolean
+  /** Local port forwards. */
+  portForwards: boolean
+  /** Auto-detect Claude/Codex from terminal output. */
+  providerDetect: boolean
+  /** electron-updater (honored by UpdateService via main). */
+  autoUpdate: boolean
+}
+
+const DEFAULT_FLAGS: FeatureFlags = {
+  imageBridge: true,
+  portForwards: true,
+  providerDetect: true,
+  autoUpdate: true
+}
 
 export class PorticoController {
   private session: SshSession | null = null
@@ -51,6 +83,12 @@ export class PorticoController {
   private portForwarder: PortForwarder | null = null
   /** In-flight reconnect session so cancel/disconnect can abort a mid-connect attempt. */
   private pendingReconnectSession: SshSession | null = null
+  /** Bumps on every user connect/disconnect to invalidate in-flight work. */
+  private lifecycleEpoch = 0
+  private connectInFlight = false
+  private reconnectInFlight = false
+  private flags: FeatureFlags = { ...DEFAULT_FLAGS }
+  private tmuxPrefs: TmuxPrefs = { ...DEFAULT_TMUX_PREFS }
 
   outputListeners = new Set<(data: string) => void>()
   statusListeners = new Set<(s: StatusPayload) => void>()
@@ -61,9 +99,50 @@ export class PorticoController {
 
   constructor(private readonly getWindow: () => BrowserWindow | null) {}
 
+  /** Apply renderer feature flags (terminal-only mode, etc.). */
+  setFeatureFlags(partial: Partial<FeatureFlags>): Result<FeatureFlags> {
+    this.flags = { ...this.flags, ...partial }
+    log.info('controller', 'feature flags updated', this.flags as unknown as Record<string, unknown>)
+    if (!this.flags.portForwards) {
+      this.portForwarder?.destroyAll()
+      this.portForwarder = null
+      this.pushPortForwards()
+    }
+    return ok({ ...this.flags })
+  }
+
+  getFeatureFlags(): Result<FeatureFlags> {
+    return ok({ ...this.flags })
+  }
+
+  setTmuxPrefs(partial: Partial<TmuxPrefs>): Result<TmuxPrefs> {
+    this.tmuxPrefs = normalizeTmuxPrefs({ ...this.tmuxPrefs, ...partial })
+    log.info('controller', 'tmux prefs updated', {
+      mode: this.tmuxPrefs.mode,
+      sessionName: this.tmuxPrefs.sessionName
+    })
+    return ok({ ...this.tmuxPrefs })
+  }
+
+  getTmuxPrefs(): Result<TmuxPrefs> {
+    return ok({ ...this.tmuxPrefs })
+  }
+
   // ---- lifecycle -----------------------------------------------------------
 
   async connect(target: SshTarget): Promise<Result<ConnectResult>> {
+    if (this.connectInFlight) {
+      return err('BUSY', 'A connection attempt is already in progress.')
+    }
+    // Cancel any reconnect loop before starting a fresh connect.
+    this.reconnectCancelled = true
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+    this.connectInFlight = true
+    const epoch = ++this.lifecycleEpoch
+
     // Tear down any previous session before starting a new one.
     if (this.session) {
       this.closeHandled = true
@@ -86,14 +165,31 @@ export class PorticoController {
       session = new SshSession(target)
       this.attachSessionListeners(session)
       const info = await session.connect({
-        onPhase: (phase) => this.setConnState('connecting', { phase })
+        onPhase: (phase) => {
+          if (epoch === this.lifecycleEpoch) {
+            this.setConnState('connecting', { phase })
+          }
+        }
       })
+
+      if (epoch !== this.lifecycleEpoch) {
+        this.closeHandled = true
+        try {
+          await session.disconnect()
+        } catch {
+          /* ignore */
+        }
+        return err('CANCELLED', 'Connection superseded by a newer action.')
+      }
+
       this.session = session
       this.target = target
       this.closeHandled = false
 
-      this.portForwarder = new PortForwarder(() => this.session?.getClient() ?? null)
-      this.portForwarder.on('change', () => this.pushPortForwards())
+      if (this.flags.portForwards) {
+        this.portForwarder = new PortForwarder(() => this.session?.getClient() ?? null)
+        this.portForwarder.on('change', () => this.pushPortForwards())
+      }
 
       this.interactive = true
       this.provider = 'shell'
@@ -105,6 +201,8 @@ export class PorticoController {
       this.pushSession()
       log.info('controller', 'connected', { ...redactTarget(target), cwd: info.initialCwd })
       this.pushStatus('info', `Connected to ${target.user}@${target.host}.`)
+      // Optional tmux entry (L2) — never fails the connect Result.
+      void this.maybeEnterTmux('connect')
       return ok({ connected: true, initialCwd: info.initialCwd })
     } catch (e) {
       log.error('controller', 'connect failed', { ...redactTarget(target), err: e as Error })
@@ -117,14 +215,19 @@ export class PorticoController {
           /* ignore */
         }
       }
-      this.session = null
-      this.setConnState('disconnected')
+      if (epoch === this.lifecycleEpoch) {
+        this.session = null
+        this.setConnState('disconnected')
+      }
       const code = (e as { code?: string }).code ?? 'CONNECT_FAILED'
       return err(code, (e as Error).message)
+    } finally {
+      this.connectInFlight = false
     }
   }
 
   async disconnect(): Promise<Result<true>> {
+    this.lifecycleEpoch++
     this.reconnectCancelled = true
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer)
@@ -166,6 +269,7 @@ export class PorticoController {
   }
 
   async cancelReconnect(): Promise<Result<true>> {
+    this.lifecycleEpoch++
     this.reconnectCancelled = true
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer)
@@ -223,12 +327,17 @@ export class PorticoController {
       this.setConnState('disconnected')
       return
     }
+    if (this.reconnectInFlight || this.connectInFlight) {
+      log.warn('controller', 'reconnect skipped: connect already in flight')
+      return
+    }
     this.reconnectCancelled = false
     this.reconnectAttempt = 0
     void this.attemptReconnect()
   }
 
   private async attemptReconnect(): Promise<void> {
+    if (this.reconnectInFlight) return
     if (this.reconnectCancelled || !this.target) {
       this.setConnState('disconnected')
       return
@@ -244,6 +353,8 @@ export class PorticoController {
       return
     }
 
+    this.reconnectInFlight = true
+    const epoch = this.lifecycleEpoch
     this.reconnectAttempt++
     this.setConnState('reconnecting', { attempt: this.reconnectAttempt })
 
@@ -251,7 +362,7 @@ export class PorticoController {
       try { await this.session?.disconnect() } catch { /* ignore */ }
       this.session = null
 
-      if (this.reconnectCancelled || !this.target) {
+      if (this.reconnectCancelled || !this.target || epoch !== this.lifecycleEpoch) {
         this.setConnState('disconnected')
         return
       }
@@ -269,7 +380,7 @@ export class PorticoController {
       }
 
       // Cancel/disconnect may have raced while connect() was in flight.
-      if (this.reconnectCancelled || !this.target) {
+      if (this.reconnectCancelled || !this.target || epoch !== this.lifecycleEpoch) {
         try {
           await session.disconnect()
         } catch {
@@ -290,14 +401,17 @@ export class PorticoController {
         cb('\r\n\x1b[32m[Reconnected]\x1b[0m\r\n')
       }
 
-      this.portForwarder?.resumeAll()
+      if (this.flags.portForwards) {
+        this.portForwarder?.resumeAll()
+      }
 
       this.reconnectAttempt = 0
       this.setConnState('connected')
       log.info('controller', 'reconnected', redactTarget(this.target))
       this.pushStatus('info', `Reconnected to ${this.target.user}@${this.target.host}.`, 5000)
+      void this.maybeEnterTmux('reconnect')
     } catch (e) {
-      if (this.reconnectCancelled || !this.target) {
+      if (this.reconnectCancelled || !this.target || epoch !== this.lifecycleEpoch) {
         this.setConnState('disconnected')
         return
       }
@@ -324,19 +438,156 @@ export class PorticoController {
         this.reconnectTimer = null
         void this.attemptReconnect()
       }, delayMs)
+    } finally {
+      this.reconnectInFlight = false
     }
   }
 
   private attachSessionListeners(session: SshSession): void {
     session.on('data', (chunk: string) => this.handleOutput(chunk))
     session.on('close', (info: { intentional: boolean }) => this.handleSessionClose(info))
-    session.on('error', (e: Error) => this.pushStatus('error', e.message))
+    // Transport errors are L0-visible but must not throw into the event loop.
+    session.on('error', (e: Error) => {
+      log.warn('controller', 'session error (non-fatal for listeners)', { err: e })
+      this.pushStatus('error', e.message, 6000)
+    })
   }
 
   private setConnState(state: ConnectionState, extra?: Partial<ConnStatePayload>): void {
+    const from = this.connState
+    // Idempotent disconnect — no log spam on double teardown.
+    if (from === 'disconnected' && state === 'disconnected') {
+      return
+    }
+    const result = transition(from, state)
+    if (!result.ok) {
+      // Phase-only updates while still connecting (tcp → auth → shell → home).
+      const phaseUpdate = from === 'connecting' && state === 'connecting'
+      if (!phaseUpdate) {
+        log.warn('controller', result.reason)
+        // disconnected is a hard reset sink for teardown paths.
+        if (state !== 'disconnected') return
+      }
+    }
     this.connState = state
     const payload: ConnStatePayload = { state, ...extra }
-    for (const cb of this.connStateListeners) cb(payload)
+    for (const cb of this.connStateListeners) {
+      try {
+        cb(payload)
+      } catch (e) {
+        log.warn('controller', 'connState listener threw', { err: e as Error })
+      }
+    }
+  }
+
+  // ---- tmux (L2 — soft failures only) --------------------------------------
+
+  /**
+   * After connect/reconnect: optionally inject a tmux attach/new line into the
+   * interactive PTY according to prefs. Never throws into the caller.
+   */
+  private async maybeEnterTmux(reason: 'connect' | 'reconnect'): Promise<void> {
+    try {
+      const r = await this.enterTmux()
+      if (!r.ok) {
+        // off / no tmux / already in tmux → quiet; real errors get a soft banner
+        if (r.error.code !== 'TMUX_OFF' && r.error.code !== 'TMUX_NESTED' && r.error.code !== 'TMUX_MISSING') {
+          this.pushStatus('warn', r.error.message, 5000)
+        } else if (r.error.code === 'TMUX_MISSING' && this.tmuxPrefs.mode !== 'off') {
+          this.pushStatus(
+            'info',
+            'tmux not found on remote — staying in plain shell. Install tmux or set mode to Off.',
+            6000
+          )
+        }
+        return
+      }
+      log.info('controller', `tmux enter (${reason})`, { action: r.value.action, session: r.value.session })
+    } catch (e) {
+      log.warn('controller', 'tmux enter failed (ignored)', { err: e as Error })
+    }
+  }
+
+  async listTmuxSessions(): Promise<Result<TmuxSessionInfo[]>> {
+    try {
+      if (!this.session?.isConnected()) return err('NOT_CONNECTED', 'Connect to a host first.')
+      const has = (await this.session.runAndCapture(buildHasTmuxCommand(), { timeoutMs: 8_000 })).trim()
+      if (has !== 'yes') return err('TMUX_MISSING', 'tmux is not installed on the remote host.')
+      const out = await this.session.runAndCapture(buildListSessionsCommand(), { timeoutMs: 8_000 })
+      return ok(parseListSessions(out))
+    } catch (e) {
+      return err('TMUX_LIST_FAILED', (e as Error).message)
+    }
+  }
+
+  /**
+   * Inject a shell one-liner into the interactive PTY to attach/create tmux.
+   * Prefs drive the default; optional overrides for command palette actions.
+   */
+  async enterTmux(opts?: {
+    /** Override mode for this call only. */
+    mode?: TmuxPrefs['mode']
+    sessionName?: string
+    /** Force attach to a specific existing session. */
+    attachOnly?: string
+    /** Force create a new named session. */
+    createNew?: string
+  }): Promise<Result<{ action: string; session: string }>> {
+    try {
+      if (!this.session?.isConnected()) return err('NOT_CONNECTED', 'Connect to a host first.')
+
+      const prefs = normalizeTmuxPrefs({
+        mode: opts?.mode ?? this.tmuxPrefs.mode,
+        sessionName: opts?.sessionName ?? this.tmuxPrefs.sessionName
+      })
+
+      let line: string | null = null
+      let action = 'enter'
+      let session = prefs.sessionName
+
+      if (opts?.attachOnly) {
+        session = opts.attachOnly
+        line = buildAttachCommand(opts.attachOnly)
+        action = 'attach'
+      } else if (opts?.createNew) {
+        session = opts.createNew
+        line = buildNewSessionCommand(opts.createNew)
+        action = 'new'
+      } else {
+        if (prefs.mode === 'off') return err('TMUX_OFF', 'tmux auto-enter is off.')
+        line = buildEnterShellCommand(prefs)
+        action = prefs.mode
+      }
+
+      if (!line) return err('TMUX_OFF', 'tmux auto-enter is off.')
+
+      // Soft probes via exec (do not block PTY on failure).
+      const has = (await this.session.runAndCapture(buildHasTmuxCommand(), { timeoutMs: 8_000 })).trim()
+      if (has !== 'yes') return err('TMUX_MISSING', 'tmux is not installed on the remote host.')
+
+      const nested = (await this.session.runAndCapture(buildInTmuxCommand(), { timeoutMs: 5_000 })).trim()
+      if (nested === 'yes') {
+        return err('TMUX_NESTED', 'Already inside a tmux session — skipped.')
+      }
+
+      // Give the login shell a brief moment to print the prompt, then inject.
+      await new Promise((r) => setTimeout(r, 350))
+      if (!this.session?.isConnected()) return err('NOT_CONNECTED', 'Session closed before tmux enter.')
+
+      this.session.write(`${line}\n`)
+      this.pushStatus(
+        'info',
+        action === 'new'
+          ? `Starting tmux session “${session}”…`
+          : action === 'attach'
+            ? `Attaching tmux session “${session}”…`
+            : `Entering tmux (${prefs.mode}: ${session})…`,
+        4000
+      )
+      return ok({ action, session })
+    } catch (e) {
+      return err('TMUX_ENTER_FAILED', (e as Error).message)
+    }
   }
 
   // ---- terminal ------------------------------------------------------------
@@ -355,28 +606,48 @@ export class PorticoController {
   }
 
   private handleOutput(chunk: string): void {
-    if (!this.providerLocked) {
-      const detected = detectProvider({
-        recentOutput: this.session?.recentOutput() ?? [],
-        currentLine: ''
-      })
-      if (detected !== 'shell') {
-        this.provider = detected
-        this.providerLocked = true
-        this.pushSession()
-        this.pushStatus('info', `Detected ${detected}.`, 3000)
+    // Provider detection is L2 — never throw into the PTY data path.
+    if (this.flags.providerDetect && !this.providerLocked) {
+      try {
+        const detected = detectProvider({
+          recentOutput: this.session?.recentOutput() ?? [],
+          currentLine: ''
+        })
+        if (detected !== 'shell') {
+          this.provider = detected
+          this.providerLocked = true
+          this.pushSession()
+          this.pushStatus('info', `Detected ${detected}.`, 3000)
+        }
+      } catch (e) {
+        log.warn('controller', 'provider detect failed (ignored)', { err: e as Error })
       }
     }
-    for (const cb of this.outputListeners) cb(chunk)
+    for (const cb of this.outputListeners) {
+      try {
+        cb(chunk)
+      } catch (e) {
+        log.warn('controller', 'output listener threw', { err: e as Error })
+      }
+    }
   }
 
   // ---- image bridge --------------------------------------------------------
+
+  private assertImageBridge(): Result<true> {
+    if (!this.flags.imageBridge) {
+      return err('FEATURE_DISABLED', 'Image bridge is disabled (Terminal only mode).')
+    }
+    return ok(true)
+  }
 
   clipboardHasImage(): Result<boolean> {
     return ok(clipboardHasImage())
   }
 
   async uploadClipboard(): Promise<Result<UploadedBlob>> {
+    const gate = this.assertImageBridge()
+    if (!gate.ok) return gate
     return this.doUpload({
       prompt: undefined,
       forced: undefined,
@@ -386,6 +657,8 @@ export class PorticoController {
   }
 
   async pasteImage(args: PasteImageArgs): Promise<Result<UploadedBlob>> {
+    const gate = this.assertImageBridge()
+    if (!gate.ok) return gate
     return this.doUpload({
       prompt: args.prompt,
       forced: args.provider,
@@ -395,6 +668,8 @@ export class PorticoController {
   }
 
   async uploadLocalImage(args: UploadLocalImageArgs): Promise<Result<UploadedBlob>> {
+    const gate = this.assertImageBridge()
+    if (!gate.ok) return gate
     return this.doUpload({
       prompt: args.prompt,
       forced: args.provider,
@@ -413,17 +688,27 @@ export class PorticoController {
     load: () => Promise<NormalizedImage | null>
   }): Promise<Result<UploadedBlob>> {
     let placeholderId: string | null = null
+    // Capture session reference so a reconnect mid-upload cannot write to a new PTY by accident.
+    const session = this.session
     try {
-      if (!this.session?.isConnected()) return err('NOT_CONNECTED', 'Connect to a host first.')
+      if (!session?.isConnected()) return err('NOT_CONNECTED', 'Connect to a host first.')
       const img = await opts.load()
       if (!img) return err('NO_IMAGE', 'No image found.')
 
       const previewUrl = previewDataUrl(img)
       placeholderId = this.addShelfPlaceholder(previewUrl, opts.sourcePath)
 
-      const { blob } = await uploadBlob(this.session, img)
+      // SFTP upload is L2: failures return Result.err and never call session.disconnect.
+      const { blob } = await uploadBlob(session, img)
       const withPreview: UploadedBlob = { ...blob, previewUrl }
       log.info('controller', 'image uploaded', { hash: blob.hash, bytes: blob.bytes, ext: blob.ext })
+
+      // If the user disconnected during upload, still report success for the blob
+      // but skip inject (session may be gone).
+      if (this.session !== session || !session.isConnected()) {
+        this.commitShelfPlaceholder(placeholderId, withPreview, opts.prompt)
+        return ok(withPreview)
+      }
 
       const provider = opts.forced ?? this.provider
       const sessionCtx: ProviderSession = {
@@ -434,7 +719,13 @@ export class PorticoController {
       const fragment = formatForProvider(provider, withPreview.remotePath, opts.prompt, sessionCtx)
 
       if (opts.inject) {
-        this.inject(fragment, provider)
+        try {
+          this.inject(fragment, provider)
+        } catch (e) {
+          // Inject failure must not mark the upload as failed — file is on the remote.
+          log.warn('controller', 'inject after upload failed', { err: e as Error })
+          this.pushStatus('warn', `Uploaded, but inject failed: ${(e as Error).message}`, 5000)
+        }
       }
 
       this.commitShelfPlaceholder(placeholderId, withPreview, opts.prompt)
@@ -444,6 +735,7 @@ export class PorticoController {
       const message = (e as Error).message
       log.error('controller', 'image upload failed', { code, err: e as Error })
       if (placeholderId) this.failShelfPlaceholder(placeholderId, message)
+      // Explicitly do NOT disconnect or mutate connState — L2 isolation.
       return err(code, message)
     }
   }
@@ -524,6 +816,9 @@ export class PorticoController {
     remoteHost: string
     remotePort: number
   }): Promise<Result<PortForwardRule>> {
+    if (!this.flags.portForwards) {
+      return err('FEATURE_DISABLED', 'Port forwarding is disabled (Terminal only mode).')
+    }
     if (!this.portForwarder) return err('NOT_CONNECTED', 'Connect to a host first.')
     try {
       const added = await this.portForwarder.add(rule)
@@ -619,6 +914,8 @@ export class PorticoController {
   // ---- remote cache --------------------------------------------------------
 
   async clearRemoteCache(): Promise<Result<{ deleted: number }>> {
+    const gate = this.assertImageBridge()
+    if (!gate.ok) return gate
     try {
       if (!this.session?.isConnected()) return err('NOT_CONNECTED', 'Connect to a host first.')
       const deleted = await this.session.deleteFilesIn(PORTICO_REMOTE_DIR, () => true)

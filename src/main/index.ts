@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
@@ -9,7 +9,17 @@ import {
   appName,
   updateChannel
 } from '@shared/channel.js'
-import { IPC, type ConnectResult, type ConnStatePayload, type PasteImageArgs, type StatusPayload, type UploadLocalImageArgs } from '@shared/ipc.js'
+import {
+  IPC,
+  type ConnectResult,
+  type ConnStatePayload,
+  type FeatureFlagsPayload,
+  type PasteImageArgs,
+  type StatusPayload,
+  type TmuxEnterArgs,
+  type TmuxPrefsPayload,
+  type UploadLocalImageArgs
+} from '@shared/ipc.js'
 import { ok } from '@shared/result.js'
 import type {
   AppInfo,
@@ -30,6 +40,7 @@ import { PorticoController } from './portico-controller.js'
 import { UpdateService } from './update-service.js'
 import { getLogger } from './logger.js'
 import { resolveAlias, listHostAliases } from './ssh-config.js'
+
 
 const __dirname = join(fileURLToPath(import.meta.url), '..')
 const log = getLogger()
@@ -81,6 +92,117 @@ let mainWindow: BrowserWindow | null = null
 let controller: PorticoController | null = null
 let updates: UpdateService | null = null
 
+/**
+ * Capture image-paste accelerator only (⌘⇧V / Ctrl+Shift+V).
+ *
+ * Plain ⌘V must remain normal text paste for the terminal — never route it
+ * through the image bridge (macOS clipboards often still hold a stale image).
+ */
+function wirePasteImageShortcut(win: BrowserWindow): void {
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return
+    const mod = input.meta || input.control
+    if (!mod || !input.shift) return
+    const isV = input.code === 'KeyV' || input.key.toLowerCase() === 'v'
+    if (!isV) return
+
+    event.preventDefault()
+    win.webContents.send(IPC.SHORTCUT_PASTE_IMAGE)
+  })
+}
+
+function sendToFocused(channel: string): void {
+  const win = mainWindow ?? BrowserWindow.getFocusedWindow()
+  win?.webContents.send(channel)
+}
+
+/** Application menu with Settings / Paste Image (no silent ⌘⇧V steal). */
+function installAppMenu(): void {
+  const isMac = process.platform === 'darwin'
+  const template: Electron.MenuItemConstructorOptions[] = [
+    ...(isMac
+      ? [
+          {
+            label: app.name,
+            submenu: [
+              { role: 'about' as const },
+              { type: 'separator' as const },
+              {
+                label: 'Settings…',
+                accelerator: 'CmdOrCtrl+,',
+                click: () => sendToFocused(IPC.SHORTCUT_OPEN_SETTINGS)
+              },
+              { type: 'separator' as const },
+              { role: 'services' as const },
+              { type: 'separator' as const },
+              { role: 'hide' as const },
+              { role: 'hideOthers' as const },
+              { role: 'unhide' as const },
+              { type: 'separator' as const },
+              { role: 'quit' as const }
+            ]
+          }
+        ]
+      : [
+          {
+            label: 'File',
+            submenu: [
+              {
+                label: 'Settings…',
+                accelerator: 'CmdOrCtrl+,',
+                click: () => sendToFocused(IPC.SHORTCUT_OPEN_SETTINGS)
+              },
+              { type: 'separator' as const },
+              { role: 'quit' as const }
+            ]
+          }
+        ]),
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        {
+          label: 'Paste Image to Remote',
+          accelerator: 'CmdOrCtrl+Shift+V',
+          click: () => sendToFocused(IPC.SHORTCUT_PASTE_IMAGE)
+        },
+        // Intentionally omit pasteAndMatchStyle — its default accelerator is
+        // Cmd+Shift+V and would race our paste-image shortcut.
+        { role: 'selectAll' }
+      ]
+    },
+    {
+      label: 'View',
+      submenu: [
+        {
+          label: 'Command Palette',
+          accelerator: 'CmdOrCtrl+Shift+P',
+          click: () => sendToFocused(IPC.SHORTCUT_OPEN_PALETTE)
+        },
+        { type: 'separator' },
+        { role: 'reload' },
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' }
+      ]
+    },
+    {
+      label: 'Window',
+      submenu: [{ role: 'minimize' }, { role: 'close' }]
+    }
+  ]
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
+
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1200,
@@ -102,6 +224,8 @@ function createWindow(): BrowserWindow {
     void shell.openExternal(url)
     return { action: 'deny' }
   })
+
+  wirePasteImageShortcut(win)
 
   // Drop the stale reference when this window closes so activate can recreate.
   win.on('closed', () => {
@@ -130,6 +254,7 @@ function ensureUpdates(): void {
 
 app.whenReady().then(() => {
   log.info('app', 'ready, creating window')
+  installAppMenu()
   mainWindow = createWindow()
   controller = new PorticoController(() => mainWindow)
 
@@ -301,6 +426,27 @@ function registerIpc(c: PorticoController): void {
     ok(resolveAlias(alias))
   )
   handle(IPC.LIST_SSH_HOSTS, () => ok(listHostAliases()))
+
+  // Feature flags (terminal-only / L2 isolation)
+  handleArg<Partial<FeatureFlagsPayload>, Result<FeatureFlagsPayload>>(IPC.SET_FEATURE_FLAGS, (flags) => {
+    const r = c.setFeatureFlags(flags)
+    if (r.ok && 'autoUpdate' in flags) {
+      updates?.setEnabled(!!flags.autoUpdate)
+    }
+    return r
+  })
+  handle(IPC.GET_FEATURE_FLAGS, () => c.getFeatureFlags())
+
+  // Remote tmux
+  handleArg<Partial<TmuxPrefsPayload>, Result<TmuxPrefsPayload>>(IPC.TMUX_SET_PREFS, (p) =>
+    c.setTmuxPrefs(p)
+  )
+  handle(IPC.TMUX_GET_PREFS, () => c.getTmuxPrefs())
+  handle(IPC.TMUX_LIST, () => c.listTmuxSessions())
+  handleArg<TmuxEnterArgs | undefined, Result<{ action: string; session: string }>>(
+    IPC.TMUX_ENTER,
+    (a) => c.enterTmux(a)
+  )
 }
 
 /** Static app identity for the renderer (name, version, channels, packaged). */

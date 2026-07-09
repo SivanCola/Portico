@@ -30,6 +30,21 @@ const api: PorticoApi = {
     ipcRenderer.invoke(IPC.PASTE_REMOTE_PATH, { remotePath, prompt }),
   uploadLocalImage: (args) => ipcRenderer.invoke(IPC.UPLOAD_LOCAL_IMAGE, args),
   pickImageFile: () => ipcRenderer.invoke(IPC.PICK_IMAGE_FILE),
+  onPasteImageShortcut: (cb) => {
+    const h = () => cb()
+    ipcRenderer.on(IPC.SHORTCUT_PASTE_IMAGE, h)
+    return () => ipcRenderer.removeListener(IPC.SHORTCUT_PASTE_IMAGE, h)
+  },
+  onOpenSettings: (cb) => {
+    const h = () => cb()
+    ipcRenderer.on(IPC.SHORTCUT_OPEN_SETTINGS, h)
+    return () => ipcRenderer.removeListener(IPC.SHORTCUT_OPEN_SETTINGS, h)
+  },
+  onOpenPalette: (cb) => {
+    const h = () => cb()
+    ipcRenderer.on(IPC.SHORTCUT_OPEN_PALETTE, h)
+    return () => ipcRenderer.removeListener(IPC.SHORTCUT_OPEN_PALETTE, h)
+  },
   // Session
   getSession: () => ipcRenderer.invoke(IPC.GET_SESSION),
   setProvider: (provider) => ipcRenderer.invoke(IPC.SET_PROVIDER, provider),
@@ -86,7 +101,13 @@ const api: PorticoApi = {
   pickPrivateKey: () => ipcRenderer.invoke(IPC.PICK_PRIVATE_KEY),
   // SSH config alias support
   resolveSshAlias: (alias) => ipcRenderer.invoke(IPC.RESOLVE_SSH_ALIAS, alias),
-  listSshHosts: () => ipcRenderer.invoke(IPC.LIST_SSH_HOSTS)
+  listSshHosts: () => ipcRenderer.invoke(IPC.LIST_SSH_HOSTS),
+  setFeatureFlags: (flags) => ipcRenderer.invoke(IPC.SET_FEATURE_FLAGS, flags),
+  getFeatureFlags: () => ipcRenderer.invoke(IPC.GET_FEATURE_FLAGS),
+  setTmuxPrefs: (prefs) => ipcRenderer.invoke(IPC.TMUX_SET_PREFS, prefs),
+  getTmuxPrefs: () => ipcRenderer.invoke(IPC.TMUX_GET_PREFS),
+  listTmuxSessions: () => ipcRenderer.invoke(IPC.TMUX_LIST),
+  enterTmux: (args) => ipcRenderer.invoke(IPC.TMUX_ENTER, args)
 }
 
 contextBridge.exposeInMainWorld('portico', api)

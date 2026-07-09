@@ -11,6 +11,7 @@
  * electron and electron-updater are mocked so the suite runs in plain Node.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+import type { UpdateStatus } from '@shared/types.js'
 
 // ---- mocks --------------------------------------------------------------
 
@@ -124,11 +125,16 @@ describe('UpdateService — dev (unpackaged)', () => {
   })
 })
 
+/** Packaged builds with feed metadata present (override the app-update.yml probe). */
+function packagedOpts(extra: { startupDelayMs?: number } = {}) {
+  return { hasUpdateMetadata: () => true, startupDelayMs: 100000, ...extra }
+}
+
 describe('UpdateService — packaged', () => {
   it('configures the feed and wires event handlers on init', async () => {
     setIsPackaged(true)
     const { UpdateService } = await import('./update-service.js')
-    const svc = new UpdateService({ startupDelayMs: 100000 }) // avoid the auto-check
+    const svc = new UpdateService(packagedOpts()) // avoid the auto-check
     await svc.init()
 
     // Both channels auto-download so "available" progresses to a real download.
@@ -152,7 +158,7 @@ describe('UpdateService — packaged', () => {
   it('fans out status transitions to listeners via events', async () => {
     setIsPackaged(true)
     const { UpdateService } = await import('./update-service.js')
-    const svc = new UpdateService({ startupDelayMs: 100000 })
+    const svc = new UpdateService(packagedOpts())
     await svc.init()
 
     const seen: string[] = []
@@ -179,7 +185,7 @@ describe('UpdateService — packaged', () => {
   it('checkForUpdates delegates to electron-updater when packaged', async () => {
     setIsPackaged(true)
     const { UpdateService } = await import('./update-service.js')
-    const svc = new UpdateService({ startupDelayMs: 100000 })
+    const svc = new UpdateService(packagedOpts())
     await svc.init()
 
     const r = await svc.checkForUpdates()
@@ -190,7 +196,7 @@ describe('UpdateService — packaged', () => {
   it('installUpdate calls quitAndInstall only after a download', async () => {
     setIsPackaged(true)
     const { UpdateService } = await import('./update-service.js')
-    const svc = new UpdateService({ startupDelayMs: 100000 })
+    const svc = new UpdateService(packagedOpts())
     await svc.init()
 
     // Nothing downloaded yet.
@@ -212,7 +218,7 @@ describe('UpdateService — packaged', () => {
     try {
       setIsPackaged(true)
       const { UpdateService } = await import('./update-service.js')
-      const svc = new UpdateService({ startupDelayMs: 5000 })
+      const svc = new UpdateService(packagedOpts({ startupDelayMs: 5000 }))
       await svc.init()
 
       svc.dispose()
@@ -227,7 +233,7 @@ describe('UpdateService — packaged', () => {
   it('init after dispose re-wires the updater (macOS window recreate)', async () => {
     setIsPackaged(true)
     const { UpdateService } = await import('./update-service.js')
-    const svc = new UpdateService({ startupDelayMs: 100000 })
+    const svc = new UpdateService(packagedOpts())
     await svc.init()
     expect(fakeUpdater.on).toHaveBeenCalled()
 
@@ -242,7 +248,7 @@ describe('UpdateService — packaged', () => {
   it('dispose removes listeners so re-init on the same singleton does not double fan-out', async () => {
     setIsPackaged(true)
     const { UpdateService } = await import('./update-service.js')
-    const svc = new UpdateService({ startupDelayMs: 100000 })
+    const svc = new UpdateService(packagedOpts())
     await svc.init()
 
     const firstOnCount = fakeUpdater.on.mock.calls.length
@@ -276,5 +282,51 @@ describe('UpdateService — packaged', () => {
 
     emit('checking-for-update')
     expect(seen).toEqual(['checking'])
+  })
+
+  it('skips updater when app-update.yml is missing (local --dir pack)', async () => {
+    setIsPackaged(true)
+    const { UpdateService } = await import('./update-service.js')
+    const svc = new UpdateService({
+      startupDelayMs: 0,
+      hasUpdateMetadata: () => false
+    })
+    await svc.init()
+    expect(fakeUpdater.on).not.toHaveBeenCalled()
+
+    const r = await svc.checkForUpdates()
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(r.value.state).toBe('not-available')
+      expect(r.value.message).toMatch(/local build/i)
+    }
+    expect(fakeUpdater.checkForUpdates).not.toHaveBeenCalled()
+  })
+
+  it('suppresses ENOENT app-update.yml as not-available instead of error', async () => {
+    setIsPackaged(true)
+    const { UpdateService, isBenignUpdateError } = await import('./update-service.js')
+    expect(
+      isBenignUpdateError(
+        "ENOENT: no such file or directory, open '/x/Portico Beta.app/Contents/Resources/app-update.yml'"
+      )
+    ).toBe(true)
+
+    const svc = new UpdateService(packagedOpts())
+    await svc.init()
+
+    const seen: UpdateStatus['state'][] = []
+    svc.listeners.add((s) => seen.push(s.state))
+
+    const call = fakeUpdater.on.mock.calls.find((c) => c[0] === 'error')!
+    ;(call[1] as (...a: unknown[]) => void)(
+      Object.assign(new Error("ENOENT: no such file or directory, open '…/app-update.yml'"), {
+        code: 'ENOENT'
+      })
+    )
+
+    expect(svc.status().state).toBe('not-available')
+    expect(svc.status().message).toMatch(/local build/i)
+    expect(seen).toEqual(['not-available'])
   })
 })

@@ -30,3 +30,11 @@ jobs:
 
       - name: Build (beta)
         run: npm run build:beta
+
+      # Smoke: ensure packaged main/preload/renderer artifacts exist after build
+      - name: Smoke — build outputs present
+        run: |
+          test -f out/main/index.js
+          test -f out/preload/index.mjs
+          test -f out/renderer/index.html
+          echo "build smoke ok"

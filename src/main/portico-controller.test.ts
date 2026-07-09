@@ -107,6 +107,57 @@ describe('PorticoController shelf', () => {
   })
 })
 
+describe('PorticoController single-flight connect', () => {
+  let c: InstanceType<typeof PorticoController>
+
+  beforeEach(() => {
+    c = new PorticoController(() => null)
+    mockState.instances = []
+  })
+
+  it('rejects a second connect while the first is in flight', async () => {
+    let release: (() => void) | null = null
+    const gate = new Promise<void>((r) => {
+      release = r
+    })
+    mockState.connectImpl = async () => {
+      await gate
+      return { initialCwd: '/home/u' }
+    }
+
+    const p1 = c.connect({
+      id: 'u@h',
+      host: 'example.com',
+      user: 'u',
+      port: 22,
+      password: 'x'
+    })
+    const p2 = c.connect({
+      id: 'u@h2',
+      host: 'other.example',
+      user: 'u',
+      port: 22,
+      password: 'x'
+    })
+
+    const r2 = await p2
+    expect(r2.ok).toBe(false)
+    if (!r2.ok) expect(r2.error.code).toBe('BUSY')
+
+    release!()
+    const r1 = await p1
+    expect(r1.ok).toBe(true)
+  })
+
+  it('setFeatureFlags disables image bridge', async () => {
+    const r = c.setFeatureFlags({ imageBridge: false })
+    expect(r.ok).toBe(true)
+    const paste = await c.pasteImage({ prompt: 'x' })
+    expect(paste.ok).toBe(false)
+    if (!paste.ok) expect(paste.error.code).toBe('FEATURE_DISABLED')
+  })
+})
+
 describe('PorticoController reconnect cancel race', () => {
   let c: InstanceType<typeof PorticoController>
 

@@ -42,6 +42,16 @@ export const IPC = {
   PASTE_IMAGE: 'portico:pasteImage',
   UPLOAD_CLIPBOARD: 'portico:uploadClipboard',
   PASTE_REMOTE_PATH: 'portico:pasteRemotePath',
+  /**
+   * One-way main → renderer: fire the paste-image UI.
+   * Emitted from main `before-input-event` so ⌘⇧V is not stolen by Electron's
+   * default "Paste and Match Style" menu accelerator.
+   */
+  SHORTCUT_PASTE_IMAGE: 'portico:shortcut:pasteImage',
+  /** One-way main → renderer: open the settings center. */
+  SHORTCUT_OPEN_SETTINGS: 'portico:shortcut:openSettings',
+  /** One-way main → renderer: toggle the command palette. */
+  SHORTCUT_OPEN_PALETTE: 'portico:shortcut:openPalette',
 
   // Provider / session control
   GET_SESSION: 'portico:getSession',
@@ -87,8 +97,52 @@ export const IPC = {
 
   // SSH config (~/.ssh/config) alias resolution + host listing
   RESOLVE_SSH_ALIAS: 'portico:ssh:resolveAlias',
-  LIST_SSH_HOSTS: 'portico:ssh:listHosts'
+  LIST_SSH_HOSTS: 'portico:ssh:listHosts',
+
+  // Runtime feature flags (terminal-only / L2 isolation)
+  SET_FEATURE_FLAGS: 'portico:flags:set',
+  GET_FEATURE_FLAGS: 'portico:flags:get',
+
+  // Remote tmux (list / enter / prefs)
+  TMUX_SET_PREFS: 'portico:tmux:setPrefs',
+  TMUX_GET_PREFS: 'portico:tmux:getPrefs',
+  TMUX_LIST: 'portico:tmux:list',
+  TMUX_ENTER: 'portico:tmux:enter'
 } as const
+
+/** L2 capability toggles — must never tear down the SSH PTY. */
+export interface FeatureFlagsPayload {
+  imageBridge: boolean
+  portForwards: boolean
+  providerDetect: boolean
+  autoUpdate: boolean
+}
+
+/** How Portico should auto-enter remote tmux after SSH connect. */
+export type TmuxEnterMode = 'off' | 'attach-if-exists' | 'always'
+
+export interface TmuxPrefsPayload {
+  mode: TmuxEnterMode
+  sessionName: string
+}
+
+export interface TmuxSessionPayload {
+  name: string
+  windows: number
+  attached: boolean
+}
+
+export interface TmuxEnterArgs {
+  mode?: TmuxEnterMode
+  sessionName?: string
+  attachOnly?: string
+  createNew?: string
+}
+
+export interface TmuxEnterResult {
+  action: string
+  session: string
+}
 
 /** Args passed to PASTE_IMAGE. */
 export interface PasteImageArgs {
@@ -152,6 +206,10 @@ export interface PorticoApi {
   pasteRemotePath(remotePath: string, prompt?: string): Promise<Result<true>>
   uploadLocalImage(args: UploadLocalImageArgs): Promise<Result<UploadedBlob>>
   pickImageFile(): Promise<Result<string | null>>
+  /** Main process fires this when the user hits the paste-image accelerator. */
+  onPasteImageShortcut(cb: () => void): () => void
+  onOpenSettings(cb: () => void): () => void
+  onOpenPalette(cb: () => void): () => void
 
   // Session
   getSession(): Promise<Result<ProviderSession>>
@@ -201,4 +259,12 @@ export interface PorticoApi {
   resolveSshAlias(alias: string): Promise<Result<ResolvedSshTarget>>
   /** List configured host aliases from `~/.ssh/config` for the host dropdown. */
   listSshHosts(): Promise<Result<SshHostAlias[]>>
+
+  setFeatureFlags(flags: Partial<FeatureFlagsPayload>): Promise<Result<FeatureFlagsPayload>>
+  getFeatureFlags(): Promise<Result<FeatureFlagsPayload>>
+
+  setTmuxPrefs(prefs: Partial<TmuxPrefsPayload>): Promise<Result<TmuxPrefsPayload>>
+  getTmuxPrefs(): Promise<Result<TmuxPrefsPayload>>
+  listTmuxSessions(): Promise<Result<TmuxSessionPayload[]>>
+  enterTmux(args?: TmuxEnterArgs): Promise<Result<TmuxEnterResult>>
 }
