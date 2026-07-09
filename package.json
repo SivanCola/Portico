@@ -9,14 +9,21 @@
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "electron-vite build",
+    "dev:beta": "cross-env PORTICO_RELEASE_CHANNEL=beta electron-vite dev",
+    "build": "npm run build:stable",
+    "build:stable": "cross-env PORTICO_RELEASE_CHANNEL=stable electron-vite build",
+    "build:beta": "cross-env PORTICO_RELEASE_CHANNEL=beta electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "start": "electron-vite preview",
-    "pack": "electron-vite build && electron-builder --dir",
-    "dist": "electron-vite build && electron-builder"
+    "pack": "npm run pack:stable",
+    "pack:stable": "cross-env PORTICO_RELEASE_CHANNEL=stable electron-vite build && electron-builder --config electron-builder.config.cjs --dir",
+    "pack:beta": "cross-env PORTICO_RELEASE_CHANNEL=beta electron-vite build && electron-builder --config electron-builder.config.cjs --dir",
+    "dist": "npm run dist:stable",
+    "dist:stable": "cross-env PORTICO_RELEASE_CHANNEL=stable electron-vite build && electron-builder --config electron-builder.config.cjs",
+    "dist:beta": "cross-env PORTICO_RELEASE_CHANNEL=beta electron-vite build && electron-builder --config electron-builder.config.cjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
@@ -24,6 +31,7 @@
     "@types/react-dom": "^18.3.1",
     "@types/ssh2": "^1.15.5",
     "@vitejs/plugin-react": "^4.3.4",
+    "cross-env": "^7.0.3",
     "electron": "^33.4.11",
     "electron-builder": "^25.1.8",
     "electron-vite": "^2.3.0",
@@ -35,42 +43,9 @@
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-web-links": "^0.11.0",
     "@xterm/xterm": "^5.5.0",
+    "electron-updater": "^6.3.9",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "ssh2": "^1.16.0"
-  },
-  "build": {
-    "appId": "com.portico.app",
-    "productName": "Portico",
-    "directories": {
-      "output": "dist"
-    },
-    "files": [
-      "out/**/*",
-      "!node_modules/**/*"
-    ],
-    "mac": {
-      "target": [
-        { "target": "dmg", "arch": ["x64", "arm64"] },
-        { "target": "zip", "arch": ["x64", "arm64"] }
-      ],
-      "category": "public.app-category.developer-tools"
-    },
-    "win": {
-      "target": [
-        { "target": "nsis", "arch": ["x64"] }
-      ]
-    },
-    "linux": {
-      "target": [
-        { "target": "AppImage", "arch": ["x64"] },
-        { "target": "deb", "arch": ["x64"] }
-      ],
-      "category": "Development"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true
-    }
   }
 }

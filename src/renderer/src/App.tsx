@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { ConnectionState, PortForwardStatus, ProviderId, ProviderSession, ShelfItem, SshTarget } from '@shared/types.js'
+import type {
+  AppInfo,
+  ConnectionState,
+  PortForwardStatus,
+  ProviderId,
+  ProviderSession,
+  ShelfItem,
+  SshTarget,
+  UpdateStatus
+} from '@shared/types.js'
 import type { ConnStatePayload, StatusPayload } from '@shared/ipc.js'
 import { ConnectionForm } from './components/ConnectionForm.js'
 import { Terminal } from './components/Terminal.js'
@@ -18,6 +27,8 @@ export function App() {
   const [portForwards, setPortForwards] = useState<PortForwardStatus[]>([])
   const [status, setStatus] = useState<StatusPayload | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null)
   const statusTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const isActive = connState === 'connected' || connState === 'connecting' || connState === 'reconnecting'
@@ -32,6 +43,19 @@ export function App() {
   }, [])
 
   useEffect(() => window.portico.onStatus(pushStatus), [pushStatus])
+
+  // ---- app identity (name + version for the top bar / beta badge) --------
+  useEffect(() => {
+    window.portico
+      .getAppInfo()
+      .then((r) => {
+        if (r.ok) setAppInfo(r.value)
+      })
+      .catch(() => {})
+  }, [])
+
+  // ---- live auto-update status from main ----------------------------------
+  useEffect(() => window.portico.onUpdateStatus(setUpdateStatus), [])
 
   // ---- refresh the provider session whenever connection changes -----------
   const refreshSession = useCallback(async () => {
@@ -200,6 +224,20 @@ export function App() {
     else pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
   }, [pushStatus])
 
+  // ---- auto-update actions -------------------------------------------------
+  const checkForUpdates = useCallback(async () => {
+    const r = await window.portico.checkForUpdates()
+    if (!r.ok) pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
+    else if (r.value.state === 'not-available') {
+      pushStatus({ level: 'info', message: r.value.message ?? 'You are on the latest version.', ttlMs: 4000 })
+    }
+  }, [pushStatus])
+
+  const installUpdate = useCallback(async () => {
+    const r = await window.portico.installUpdate()
+    if (!r.ok) pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
+  }, [pushStatus])
+
   // ---- global shortcuts: ⌘⇧P palette, ⌘⇧V paste image ----------------------
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -253,13 +291,38 @@ export function App() {
         run: clearRemoteCache
       },
       {
+        id: 'check-for-updates',
+        title: 'Check for Updates',
+        hint: 'Look for a new version on the update channel',
+        enabled: updateStatus?.state !== 'checking' && updateStatus?.state !== 'downloading',
+        run: checkForUpdates
+      },
+      {
+        id: 'install-update',
+        title: 'Restart to Install Update',
+        hint: 'Quit and relaunch into the downloaded update',
+        enabled: updateStatus?.state === 'downloaded',
+        run: installUpdate
+      },
+      {
         id: 'disconnect',
         title: 'Disconnect',
         enabled: isActive,
         run: disconnect
       }
     ],
-    [connState, isActive, pasteImage, uploadClipboard, clearRemoteCache, disconnect, pushStatus]
+    [
+      connState,
+      isActive,
+      pasteImage,
+      uploadClipboard,
+      clearRemoteCache,
+      checkForUpdates,
+      installUpdate,
+      disconnect,
+      pushStatus,
+      updateStatus?.state
+    ]
   )
 
   return (
@@ -271,6 +334,7 @@ export function App() {
         onProvider={setProvider}
         onDisconnect={disconnect}
         onOpenPalette={() => setPaletteOpen(true)}
+        appInfo={appInfo}
       />
       <div className="workspace">
         <div className="terminal-pane">
@@ -309,6 +373,7 @@ export function App() {
         </div>
       </div>
 
+      {updateStatus && <UpdateBanner status={updateStatus} onInstall={installUpdate} />}
       {status && <div className={`status-banner ${status.level}`}>{status.message}</div>}
       <CommandPalette open={paletteOpen} actions={actions} onClose={closePalette} />
     </div>
@@ -322,9 +387,10 @@ interface TopBarProps {
   onProvider: (p: ProviderId) => void
   onDisconnect: () => void
   onOpenPalette: () => void
+  appInfo: AppInfo | null
 }
 
-function TopBar({ connState, connInfo, provider, onProvider, onDisconnect, onOpenPalette }: TopBarProps) {
+function TopBar({ connState, connInfo, provider, onProvider, onDisconnect, onOpenPalette, appInfo }: TopBarProps) {
   const dotClass =
     connState === 'connected'
       ? 'live'
@@ -335,12 +401,18 @@ function TopBar({ connState, connInfo, provider, onProvider, onDisconnect, onOpe
           : ''
 
   const isActive = connState === 'connected' || connState === 'connecting' || connState === 'reconnecting'
+  const isBeta = appInfo?.releaseChannel === 'beta'
+  const displayName = appInfo?.name ?? 'Portico'
 
   return (
     <header className="topbar">
       <div className="brand">
         <span className={`dot ${dotClass}`} />
-        Portico
+        {displayName}
+        {isBeta && <span className="beta-badge" title="Beta channel">Beta</span>}
+        {appInfo?.version && (
+          <span className="version-label" title="App version">v{appInfo.version}</span>
+        )}
         {connState === 'reconnecting' && (
           <span className="reconnect-label">Reconnecting...</span>
         )}
@@ -369,5 +441,60 @@ function TopBar({ connState, connInfo, provider, onProvider, onDisconnect, onOpe
         </button>
       )}
     </header>
+  )
+}
+
+interface UpdateBannerProps {
+  status: UpdateStatus
+  onInstall: () => void
+}
+
+/**
+ * Non-blocking update status banner. Only the "downloaded" state is actionable;
+ * the others surface progress so the user knows an update is in flight without
+ * offering a premature install.
+ */
+function UpdateBanner({ status, onInstall }: UpdateBannerProps) {
+  let message: string
+  switch (status.state) {
+    case 'checking':
+      message = 'Checking for updates…'
+      break
+    case 'available':
+      message = status.version ? `Update ${status.version} available — downloading…` : 'Update available — downloading…'
+      break
+    case 'downloading':
+      message =
+        status.percent != null
+          ? `Downloading update… ${Math.round(status.percent)}%`
+          : 'Downloading update…'
+      break
+    case 'downloaded':
+      message = status.version
+        ? `Update ${status.version} is ready.`
+        : 'An update is ready.'
+      break
+    case 'not-available':
+      // Surfaced transiently via the status banner instead; nothing sticky here.
+      return null
+    case 'error':
+      message = status.message ?? 'Update failed.'
+      break
+    case 'idle':
+    default:
+      return null
+  }
+
+  const actionable = status.state === 'downloaded'
+
+  return (
+    <div className={`update-banner ${actionable ? 'actionable' : status.state === 'error' ? 'error' : ''}`}>
+      <span>{message}</span>
+      {actionable && (
+        <span className="actions">
+          <button className="btn primary" onClick={onInstall}>Restart now</button>
+        </span>
+      )}
+    </div>
   )
 }

@@ -2,9 +2,16 @@
  * Shared, environment-agnostic constants for Portico.
  * Safe to import from main, preload, and renderer.
  */
+import { remoteBlobDir } from './channel.js'
 
-/** Directory on the remote host where uploaded blobs live. */
-export const PORTICO_REMOTE_DIR = '~/.portico/blobs'
+/**
+ * Directory on the remote host where uploaded blobs live.
+ *
+ * Channel-aware: stable uses `~/.portico/blobs`, beta uses
+ * `~/.portico-beta/blobs`, so the two builds never share a cache. Resolved
+ * from the compile-time channel (see `src/shared/channel.ts`).
+ */
+export const PORTICO_REMOTE_DIR = remoteBlobDir()
 
 /** Version of the on-disk blob layout; bump if storage convention changes. */
 export const PORTICO_BLOB_LAYOUT = 1

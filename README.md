@@ -37,10 +37,12 @@ top-bar provider pills.
 
 ```bash
 npm install
-npm run dev        # electron-vite dev (launches the Electron app)
-npm run build      # build main + preload + renderer to out/
-npm run typecheck  # tsc --noEmit for both node and web configs
-npm test           # vitest unit tests for pure logic
+npm run dev          # electron-vite dev — launches the stable Electron app
+npm run dev:beta     # same, but built for the beta channel
+npm run build        # build main + preload + renderer to out/ (stable)
+npm run build:beta   # build for the beta channel
+npm run typecheck    # tsc --noEmit for both node and web configs
+npm test             # vitest unit tests for pure logic
 ```
 
 ## Key bindings
@@ -53,6 +55,45 @@ npm test           # vitest unit tests for pure logic
 Remote blobs live at `~/.portico/blobs/<sha256>.<ext>` (content-addressed, so
 re-pasting the same image is a no-op). `Clear Remote Portico Cache` in the
 palette deletes them.
+
+## Release channels
+
+Portico ships in two parallel channels, selected at build time via
+`PORTICO_RELEASE_CHANNEL` (`stable` is the default):
+
+| Channel | App name | appId | Remote blob dir | Update feed | Output dir |
+| ------- | -------- | ----- | ---------------- | ----------- | ---------- |
+| stable  | Portico | `com.portico.app` | `~/.portico/blobs` | `latest` | `dist/stable` |
+| beta    | Portico Beta | `com.portico.app.beta` | `~/.portico-beta/blobs` | `beta` | `dist/beta` |
+
+Stable and Beta are fully isolated: different app identity, independent local
+`userData`/`localStorage`, and separate remote caches, so both can be installed
+side by side.
+
+### Packaging
+
+```bash
+npm run dist:stable   # package the stable build into dist/stable
+npm run dist:beta     # package the beta build into dist/beta
+```
+
+### Auto-updates
+
+Packaged builds check for updates on the GitHub Releases feed of this repo
+(`SivanCola/Portico`). Beta auto-downloads new prereleases and prompts to
+restart; stable only receives `latest` releases. In development, update checks
+report "updates disabled in dev." The command palette exposes
+`Check for Updates` and, once a download is ready, `Restart to Install Update`.
+
+### Releasing
+
+Tag-driven releases (see `.github/workflows/release.yml`):
+
+- `vX.Y.Z` (e.g. `v0.1.1`) → stable, published as a normal GitHub Release, feeds `latest`.
+- `vX.Y.Z-beta.N` (e.g. `v0.1.1-beta.1`) → beta, published as a **prerelease** GitHub Release, feeds `beta`.
+
+The workflow validates that `package.json` `version` equals the tag (minus the
+`v`) before building, so updater metadata never carries the wrong version.
 
 ## Test plan mapping
 

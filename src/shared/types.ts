@@ -2,6 +2,7 @@
  * Shared types used across main / preload / renderer.
  */
 import type { ImageExt } from './constants.js'
+import type { ReleaseChannel, UpdateChannel } from './channel.js'
 
 /** Identifiers for the AI coding providers Portico knows how to target. */
 export type ProviderId = 'claude' | 'codex' | 'shell'
@@ -95,3 +96,36 @@ export interface PorticoError {
 
 /** Discriminated result so IPC callers can avoid try/catch across the bridge. */
 export type Result<T> = { ok: true; value: T } | { ok: false; error: PorticoError }
+
+/**
+ * Static info about the running app, surfaced to the renderer for the top bar
+ * (beta badge + version) and for update UI gating.
+ */
+export interface AppInfo {
+  name: string
+  version: string
+  releaseChannel: ReleaseChannel
+  updateChannel: UpdateChannel
+  isPackaged: boolean
+}
+
+/** Coarse lifecycle state of the auto-updater. */
+export type UpdateState =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'downloading'
+  | 'downloaded'
+  | 'not-available'
+  | 'error'
+
+/** Pushed by the updater service and shown in the renderer status banner. */
+export interface UpdateStatus {
+  state: UpdateState
+  /** Version of the available/downloaded update, when known. */
+  version?: string
+  /** Download progress 0-100, while downloading. */
+  percent?: number
+  /** Human-readable detail (e.g. an error message). */
+  message?: string
+}

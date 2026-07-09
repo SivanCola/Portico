@@ -7,7 +7,7 @@
  */
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import { IPC, type ConnStatePayload, type PorticoApi, type StatusPayload } from '@shared/ipc.js'
-import type { PortForwardStatus, ShelfItem } from '@shared/types.js'
+import type { PortForwardStatus, ShelfItem, UpdateStatus } from '@shared/types.js'
 
 const api: PorticoApi = {
   // Lifecycle
@@ -64,6 +64,15 @@ const api: PorticoApi = {
     const h = (_e: IpcRendererEvent, s: StatusPayload) => cb(s)
     ipcRenderer.on(IPC.STATUS, h)
     return () => ipcRenderer.removeListener(IPC.STATUS, h)
+  },
+  // App info & auto-updates
+  getAppInfo: () => ipcRenderer.invoke(IPC.GET_APP_INFO),
+  checkForUpdates: () => ipcRenderer.invoke(IPC.CHECK_FOR_UPDATES),
+  installUpdate: () => ipcRenderer.invoke(IPC.INSTALL_UPDATE),
+  onUpdateStatus: (cb) => {
+    const h = (_e: IpcRendererEvent, s: UpdateStatus) => cb(s)
+    ipcRenderer.on(IPC.UPDATE_STATUS, h)
+    return () => ipcRenderer.removeListener(IPC.UPDATE_STATUS, h)
   }
 }
 

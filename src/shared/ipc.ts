@@ -10,6 +10,7 @@
  *    `Result<T>` so failures are values, not thrown exceptions.
  */
 import type {
+  AppInfo,
   ConnectionState,
   PortForwardRule,
   PortForwardStatus,
@@ -18,6 +19,7 @@ import type {
   Result,
   ShelfItem,
   SshTarget,
+  UpdateStatus,
   UploadedBlob
 } from './types.js'
 
@@ -63,7 +65,13 @@ export const IPC = {
   PF_CHANGED: 'portico:pf:changed',
 
   // Status banner
-  STATUS: 'portico:status'
+  STATUS: 'portico:status',
+
+  // App info & updates
+  GET_APP_INFO: 'portico:appInfo',
+  CHECK_FOR_UPDATES: 'portico:updates:check',
+  INSTALL_UPDATE: 'portico:updates:install',
+  UPDATE_STATUS: 'portico:updates:status'
 } as const
 
 /** Args passed to PASTE_IMAGE. */
@@ -142,4 +150,10 @@ export interface PorticoApi {
 
   // Status
   onStatus(cb: (s: StatusPayload) => void): () => void
+
+  // App info & auto-updates
+  getAppInfo(): Promise<Result<AppInfo>>
+  checkForUpdates(): Promise<Result<UpdateStatus>>
+  installUpdate(): Promise<Result<true>>
+  onUpdateStatus(cb: (s: UpdateStatus) => void): () => void
 }

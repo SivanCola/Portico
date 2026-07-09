@@ -8,7 +8,43 @@ permissions:
   contents: write
 
 jobs:
+  # Detect the release channel from the tag and validate the version, once,
+  # before fanning out to the platform matrix. Output is consumed downstream.
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      channel: ${{ steps.meta.outputs.channel }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve channel & validate version
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"            # e.g. v0.1.1 or v0.1.1-beta.2
+          VERSION_NO_V="${TAG#v}"             # strip leading v -> 0.1.1(-beta.2)
+          # Channel: any tag whose prerelease suffix starts with "beta" -> beta.
+          if printf '%s' "$VERSION_NO_V" | grep -Eq -- '-beta(\.|$)'; then
+            CHANNEL="beta"
+          else
+            CHANNEL="stable"
+          fi
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION_NO_V" >> "$GITHUB_OUTPUT"
+
+          # Fail early if package.json version doesn't match the tag, so we
+          # never publish updater metadata with a wrong version.
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$PKG_VERSION" != "$VERSION_NO_V" ]; then
+            echo "::error::package.json version ($PKG_VERSION) does not match tag ($VERSION_NO_V)"
+            exit 1
+          fi
+          echo "Releasing channel=$CHANNEL version=$VERSION_NO_V"
+
   build:
+    needs: resolve
     strategy:
       fail-fast: false
       matrix:
@@ -21,6 +57,9 @@ jobs:
             platform: win
 
     runs-on: ${{ matrix.os }}
+
+    env:
+      PORTICO_RELEASE_CHANNEL: ${{ needs.resolve.outputs.channel }}
 
     steps:
       - uses: actions/checkout@v4
@@ -38,25 +77,25 @@ jobs:
       - name: Test
         run: npm test
 
-      - name: Build & Package
-        run: npm run dist
+      - name: Build & package (${{ env.PORTICO_RELEASE_CHANNEL }})
+        # Build the channel-specific package. We publish artifacts to the
+        # GitHub Release in the dedicated `release` job below, so build with
+        # --publish never here.
+        run: npm run dist:${{ env.PORTICO_RELEASE_CHANNEL }} -- --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: portico-${{ matrix.platform }}
-          path: |
-            dist/*.dmg
-            dist/*.zip
-            dist/*.exe
-            dist/*.AppImage
-            dist/*.deb
-          if-no-files-found: ignore
+          name: portico-${{ env.PORTICO_RELEASE_CHANNEL }}-${{ matrix.platform }}
+          # The entire per-channel output dir: installers + updater metadata
+          # (latest.yml / beta.yml), blockmaps, etc.
+          path: dist/${{ env.PORTICO_RELEASE_CHANNEL }}/*
+          if-no-files-found: error
 
   release:
-    needs: build
+    needs: [resolve, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -67,7 +106,12 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          draft: true
+          # beta tags must be marked prerelease (and NOT draft) so the
+          # electron-updater beta feed can discover them. Stable is a normal
+          # published release. Use draft:false for both; gate real releases
+          # via GitHub Environment protection if manual approval is needed.
+          prerelease: ${{ needs.resolve.outputs.channel == 'beta' }}
+          draft: false
           generate_release_notes: true
           files: artifacts/*
         env:

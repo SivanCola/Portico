@@ -2,9 +2,16 @@ import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { PORTICO_REMOTE_DIR } from '@shared/constants.js'
+import {
+  APP_NAME,
+  RELEASE_CHANNEL,
+  appName,
+  updateChannel
+} from '@shared/channel.js'
 import { IPC, type ConnectResult, type ConnStatePayload, type PasteImageArgs, type StatusPayload } from '@shared/ipc.js'
 import { ok } from '@shared/result.js'
 import type {
+  AppInfo,
   ProviderId,
   ProviderSession,
   PortForwardRule,
@@ -13,14 +20,29 @@ import type {
   Result,
   ShelfItem,
   SshTarget,
+  UpdateStatus,
   UploadedBlob
 } from '@shared/types.js'
 import { PorticoController } from './portico-controller.js'
+import { UpdateService } from './update-service.js'
 
 const __dirname = join(fileURLToPath(import.meta.url), '..')
 
+// ---- runtime isolation by release channel --------------------------------
+// Beta must be a fully independent app: different display name, different
+// userData dir (so renderer localStorage / recent targets never collide with
+// stable), and different identity. This runs as early as possible, before any
+// window is created or `app.getPath('userData')` is read.
+if (RELEASE_CHANNEL === 'beta') {
+  app.setName(APP_NAME.beta)
+  // Force a distinct userData path keyed off the app name. Without this, two
+  // builds with different appId could still land in the same default dir.
+  app.setPath('userData', join(app.getPath('appData'), APP_NAME.beta))
+}
+
 let mainWindow: BrowserWindow | null = null
 let controller: PorticoController | null = null
+let updates: UpdateService | null = null
 
 function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
@@ -29,7 +51,7 @@ function createWindow(): BrowserWindow {
     minWidth: 880,
     minHeight: 560,
     backgroundColor: '#0e1116',
-    title: 'Portico',
+    title: appName(),
     webPreferences: {
       preload: join(__dirname, '../preload/index.mjs'),
       contextIsolation: true,
@@ -76,12 +98,20 @@ app.whenReady().then(() => {
 
   registerIpc(controller)
 
+  // ---- auto-updater -----------------------------------------------------
+  updates = new UpdateService()
+  updates.listeners.add((s: UpdateStatus) =>
+    mainWindow?.webContents.send(IPC.UPDATE_STATUS, s)
+  )
+  void updates.init()
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 })
 
 app.on('window-all-closed', () => {
+  updates?.dispose()
   if (process.platform !== 'darwin') app.quit()
 })
 
@@ -131,6 +161,22 @@ function registerIpc(c: PorticoController): void {
   )
   handleArg<string, Result<true>>(IPC.PF_REMOVE, (id) => c.removePortForward(id))
   handle(IPC.PF_LIST, () => c.listPortForwards())
+
+  // App info & updates
+  handle(IPC.GET_APP_INFO, getAppInfo)
+  handle(IPC.CHECK_FOR_UPDATES, () => (updates ? updates.checkForUpdates() : ok({ state: 'not-available' as const, message: 'Updates are disabled.' })))
+  handle(IPC.INSTALL_UPDATE, () => (updates ? updates.installUpdate() : ok(true)))
+}
+
+/** Static app identity for the renderer (name, version, channels, packaged). */
+function getAppInfo(): Result<AppInfo> {
+  return ok({
+    name: appName(),
+    version: app.getVersion(),
+    releaseChannel: RELEASE_CHANNEL,
+    updateChannel: updateChannel(),
+    isPackaged: app.isPackaged
+  })
 }
 
 // Surface the remote dir convention for any introspection needs.
