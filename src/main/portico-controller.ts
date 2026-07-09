@@ -6,11 +6,13 @@ import type { PorticoApi } from '@shared/ipc.js'
 import { ok, err } from '@shared/result.js'
 import type {
   PasteImageArgs,
+  UploadLocalImageArgs,
   ConnectResult,
   ConnStatePayload,
   StatusPayload
 } from '@shared/ipc.js'
 import type {
+  ConnectPhase,
   ConnectionState,
   NormalizedImage,
   PortForwardRule,
@@ -25,7 +27,7 @@ import type {
 import { SshSession } from './ssh-session.js'
 import { PortForwarder } from './port-forwarder.js'
 import { uploadBlob } from './blob-uploader.js'
-import { clipboardHasImage, readClipboardImage } from './clipboard.js'
+import { clipboardHasImage, readClipboardImage, readImageFile } from './clipboard.js'
 import { getLogger, redactTarget } from './logger.js'
 
 const MAX_RECONNECT_ATTEMPTS = 10
@@ -60,14 +62,30 @@ export class PorticoController {
   // ---- lifecycle -----------------------------------------------------------
 
   async connect(target: SshTarget): Promise<Result<ConnectResult>> {
+    // Tear down any previous session before starting a new one.
+    if (this.session) {
+      this.closeHandled = true
+      try {
+        await this.session.disconnect()
+      } catch {
+        /* ignore */
+      }
+      this.session = null
+      this.portForwarder?.destroyAll()
+      this.portForwarder = null
+    }
+
+    let session: SshSession | null = null
     try {
       this.assertTarget(target)
       log.info('controller', 'connect attempt', redactTarget(target))
-      this.setConnState('connecting')
+      this.setConnState('connecting', { phase: 'resolving' })
 
-      const session = new SshSession(target)
+      session = new SshSession(target)
       this.attachSessionListeners(session)
-      const info = await session.connect()
+      const info = await session.connect({
+        onPhase: (phase) => this.setConnState('connecting', { phase })
+      })
       this.session = session
       this.target = target
       this.closeHandled = false
@@ -81,14 +99,26 @@ export class PorticoController {
       this.reconnectAttempt = 0
       this.reconnectCancelled = false
 
-      this.setConnState('connected')
+      this.setConnState('connected', { phase: 'ready' })
+      this.pushSession()
       log.info('controller', 'connected', { ...redactTarget(target), cwd: info.initialCwd })
       this.pushStatus('info', `Connected to ${target.user}@${target.host}.`)
       return ok({ connected: true, initialCwd: info.initialCwd })
     } catch (e) {
       log.error('controller', 'connect failed', { ...redactTarget(target), err: e as Error })
+      // Orphan cleanup: shell may have opened before a later step failed.
+      if (session) {
+        this.closeHandled = true
+        try {
+          await session.disconnect()
+        } catch {
+          /* ignore */
+        }
+      }
+      this.session = null
       this.setConnState('disconnected')
-      return err('CONNECT_FAILED', (e as Error).message)
+      const code = (e as { code?: string }).code ?? 'CONNECT_FAILED'
+      return err(code, (e as Error).message)
     }
   }
 
@@ -294,23 +324,43 @@ export class PorticoController {
   }
 
   async uploadClipboard(): Promise<Result<UploadedBlob>> {
-    return this.doUpload({ prompt: undefined, forced: undefined, inject: false })
+    return this.doUpload({
+      prompt: undefined,
+      forced: undefined,
+      inject: false,
+      load: () => readClipboardImage()
+    })
   }
 
   async pasteImage(args: PasteImageArgs): Promise<Result<UploadedBlob>> {
-    return this.doUpload({ prompt: args.prompt, forced: args.provider, inject: true })
+    return this.doUpload({
+      prompt: args.prompt,
+      forced: args.provider,
+      inject: true,
+      load: () => readClipboardImage()
+    })
+  }
+
+  async uploadLocalImage(args: UploadLocalImageArgs): Promise<Result<UploadedBlob>> {
+    return this.doUpload({
+      prompt: args.prompt,
+      forced: args.provider,
+      inject: args.inject !== false,
+      load: async () => readImageFile(args.path)
+    })
   }
 
   private async doUpload(opts: {
     prompt?: string
     forced?: ProviderId
     inject: boolean
+    load: () => Promise<NormalizedImage | null>
   }): Promise<Result<UploadedBlob>> {
     let placeholderId: string | null = null
     try {
       if (!this.session?.isConnected()) return err('NOT_CONNECTED', 'Connect to a host first.')
-      const img = await readClipboardImage()
-      if (!img) return err('NO_IMAGE', 'No image on the clipboard.')
+      const img = await opts.load()
+      if (!img) return err('NO_IMAGE', 'No image found.')
 
       const previewUrl = previewDataUrl(img)
       placeholderId = this.addShelfPlaceholder(previewUrl)
@@ -351,7 +401,7 @@ export class PorticoController {
         nativePasteAvailable: false
       }
       const fragment = formatForProvider(this.provider, remotePath, prompt, sessionCtx)
-      this.inject(fragment)
+      this.inject(fragment, this.provider)
       return ok(true)
     } catch (e) {
       return err('PASTE_FAILED', (e as Error).message)
@@ -454,6 +504,11 @@ export class PorticoController {
     return ok(true)
   }
 
+  shelfRemove(id: string): Result<true> {
+    this.shelf = this.shelf.filter((i) => i.id !== id)
+    return ok(true)
+  }
+
   private addShelfPlaceholder(previewUrl?: string): string {
     const id = randomUUID()
     const item: ShelfItem = {
@@ -531,10 +586,11 @@ export class PorticoController {
   private assertTarget(t: SshTarget): void {
     if (!t.host) throw Object.assign(new Error('Host is required.'), { code: 'INVALID_TARGET' })
     if (!t.user) throw Object.assign(new Error('User is required.'), { code: 'INVALID_TARGET' })
-    if (!t.password && !t.privateKeyPath) {
-      throw Object.assign(new Error('Provide a password or a private key path.'), {
-        code: 'INVALID_TARGET'
-      })
+    if (!t.password && !t.privateKeyPath && !t.useAgent) {
+      throw Object.assign(
+        new Error('Provide a password, a private key path, or SSH agent auth.'),
+        { code: 'INVALID_TARGET' }
+      )
     }
   }
 }

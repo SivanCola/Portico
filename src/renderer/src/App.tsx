@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   AppInfo,
+  ConnectPhase,
   ConnectionState,
   PortForwardStatus,
   ProviderId,
@@ -15,11 +16,14 @@ import { Terminal } from './components/Terminal.js'
 import { ImageShelf } from './components/ImageShelf.js'
 import { PortForwards } from './components/PortForwards.js'
 import { CommandPalette, type PaletteAction } from './components/CommandPalette.js'
+import { PastePromptDialog } from './components/PastePromptDialog.js'
 
 type ConnInfo = { user: string; host: string } | null
+type PromptMode = { kind: 'clipboard' } | { kind: 'file'; path: string } | null
 
 export function App() {
   const [connState, setConnState] = useState<ConnectionState>('disconnected')
+  const [connectPhase, setConnectPhase] = useState<ConnectPhase | null>(null)
   const [connInfo, setConnInfo] = useState<ConnInfo>(null)
   const [reconnectInfo, setReconnectInfo] = useState<{ attempt: number; nextRetryIn?: number } | null>(null)
   const [session, setSession] = useState<ProviderSession | null>(null)
@@ -29,6 +33,8 @@ export function App() {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null)
+  const [promptMode, setPromptMode] = useState<PromptMode>(null)
+  const [dragOver, setDragOver] = useState(false)
   const statusTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const isActive = connState === 'connected' || connState === 'connecting' || connState === 'reconnecting'
@@ -86,6 +92,11 @@ export function App() {
   useEffect(() => {
     return window.portico.onConnectionState((payload: ConnStatePayload) => {
       setConnState(payload.state)
+      if (payload.state === 'connecting') {
+        setConnectPhase(payload.phase ?? 'resolving')
+      } else {
+        setConnectPhase(null)
+      }
       if (payload.state === 'reconnecting') {
         setReconnectInfo({ attempt: payload.attempt!, nextRetryIn: payload.nextRetryIn })
       } else {
@@ -176,16 +187,41 @@ export function App() {
   )
 
   // ---- image actions -------------------------------------------------------
-  const pasteImage = useCallback(async () => {
-    const r = await window.portico.pasteImage({})
-    if (!r.ok) pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
-  }, [pushStatus])
+  const openPastePrompt = useCallback(() => {
+    if (connState !== 'connected') return
+    setPromptMode({ kind: 'clipboard' })
+  }, [connState])
+
+  const runPasteWithPrompt = useCallback(
+    async (prompt: string) => {
+      const mode = promptMode
+      setPromptMode(null)
+      if (!mode) return
+      if (mode.kind === 'clipboard') {
+        const r = await window.portico.pasteImage({ prompt })
+        if (!r.ok) pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
+      } else {
+        const r = await window.portico.uploadLocalImage({ path: mode.path, prompt, inject: true })
+        if (!r.ok) pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
+      }
+    },
+    [promptMode, pushStatus]
+  )
+
+  const pasteImage = openPastePrompt
 
   const uploadClipboard = useCallback(async () => {
     const r = await window.portico.uploadClipboard()
     if (!r.ok) pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
     else pushStatus({ level: 'info', message: `Uploaded to ${r.value.remotePath}`, ttlMs: 4000 })
   }, [pushStatus])
+
+  const pickImageFile = useCallback(async () => {
+    if (connState !== 'connected') return
+    const r = await window.portico.pickImageFile()
+    if (!r.ok || !r.value) return
+    setPromptMode({ kind: 'file', path: r.value })
+  }, [connState])
 
   const repaste = useCallback(
     async (item: ShelfItem) => {
@@ -194,6 +230,20 @@ export function App() {
     },
     [pushStatus]
   )
+
+  const retryFailed = useCallback(
+    (item: ShelfItem) => {
+      void window.portico.shelfRemove(item.id)
+      setShelf((prev) => prev.filter((i) => i.id !== item.id))
+      setPromptMode({ kind: 'clipboard' })
+    },
+    []
+  )
+
+  const removeShelfItem = useCallback(async (item: ShelfItem) => {
+    await window.portico.shelfRemove(item.id)
+    setShelf((prev) => prev.filter((i) => i.id !== item.id))
+  }, [])
 
   const copyPath = useCallback(
     async (item: ShelfItem) => {
@@ -211,6 +261,42 @@ export function App() {
     await window.portico.shelfClear()
     setShelf([])
   }, [])
+
+  // ---- drag & drop images onto the workspace -----------------------------
+  useEffect(() => {
+    const onDragOver = (e: DragEvent) => {
+      if (connState !== 'connected') return
+      if (![...e.dataTransfer?.types ?? []].includes('Files')) return
+      e.preventDefault()
+      setDragOver(true)
+    }
+    const onDragLeave = () => setDragOver(false)
+    const onDrop = (e: DragEvent) => {
+      setDragOver(false)
+      if (connState !== 'connected') return
+      e.preventDefault()
+      const file = e.dataTransfer?.files?.[0]
+      if (!file || !file.type.startsWith('image/')) {
+        pushStatus({ level: 'warn', message: 'Drop an image file.', ttlMs: 3000 })
+        return
+      }
+      // Electron File has a non-standard `.path` for local filesystem path.
+      const path = (file as File & { path?: string }).path
+      if (!path) {
+        pushStatus({ level: 'error', message: 'Could not resolve dropped file path.', ttlMs: 4000 })
+        return
+      }
+      setPromptMode({ kind: 'file', path })
+    }
+    window.addEventListener('dragover', onDragOver)
+    window.addEventListener('dragleave', onDragLeave)
+    window.addEventListener('drop', onDrop)
+    return () => {
+      window.removeEventListener('dragover', onDragOver)
+      window.removeEventListener('dragleave', onDragLeave)
+      window.removeEventListener('drop', onDrop)
+    }
+  }, [connState, pushStatus])
 
   const focusTerminal = useCallback(() => {
     document.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')?.focus()
@@ -278,6 +364,13 @@ export function App() {
         run: uploadClipboard
       },
       {
+        id: 'upload-file',
+        title: 'Upload Image File…',
+        hint: 'Pick a local image and paste into the remote AI',
+        enabled: connState === 'connected',
+        run: pickImageFile
+      },
+      {
         id: 'detect-provider',
         title: 'Re-detect AI provider',
         hint: 'Heuristically detect Claude / Codex / shell',
@@ -325,6 +418,7 @@ export function App() {
       isActive,
       pasteImage,
       uploadClipboard,
+      pickImageFile,
       clearRemoteCache,
       checkForUpdates,
       installUpdate,
@@ -335,7 +429,7 @@ export function App() {
   )
 
   return (
-    <div className="app">
+    <div className={`app ${dragOver ? 'drag-over' : ''}`}>
       <TopBar
         connState={connState}
         connInfo={connInfo}
@@ -348,7 +442,7 @@ export function App() {
       <div className="workspace">
         <div className="terminal-pane">
           {connState === 'disconnected' || connState === 'connecting' ? (
-            <ConnectionForm onConnect={connect} />
+            <ConnectionForm onConnect={connect} phase={connectPhase} />
           ) : (
             <>
               {connState === 'reconnecting' && reconnectInfo && (
@@ -380,11 +474,27 @@ export function App() {
           )}
         </div>
         <div className="sidebar">
-          <ImageShelf items={shelf} onRepaste={repaste} onCopyPath={copyPath} onClear={clearShelf} />
+          <ImageShelf
+            items={shelf}
+            enabled={connState === 'connected'}
+            onRepaste={repaste}
+            onRetry={retryFailed}
+            onRemove={removeShelfItem}
+            onCopyPath={copyPath}
+            onClear={clearShelf}
+            onPickFile={pickImageFile}
+          />
           <PortForwards forwards={portForwards} enabled={connState === 'connected'} />
         </div>
       </div>
 
+      {dragOver && <div className="drop-overlay">Drop image to upload</div>}
+      <PastePromptDialog
+        open={!!promptMode}
+        title={promptMode?.kind === 'file' ? 'Upload image file' : 'Paste clipboard image'}
+        onCancel={() => setPromptMode(null)}
+        onConfirm={(p) => void runPasteWithPrompt(p)}
+      />
       {updateStatus && <UpdateBanner status={updateStatus} onInstall={installUpdate} />}
       {status && <div className={`status-banner ${status.level}`}>{status.message}</div>}
       <CommandPalette open={paletteOpen} actions={actions} onClose={closePalette} />

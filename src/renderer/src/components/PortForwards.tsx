@@ -110,11 +110,22 @@ export function PortForwards({ forwards, enabled }: Props) {
           ) : (
             <div className="pf-list">
               {forwards.map((f) => (
-                <div key={f.id} className={`pf-item ${f.state === 'error' ? 'pf-item-err' : ''}`}>
-                  <span className={`pf-dot ${f.state === 'listening' ? 'pf-dot-ok' : 'pf-dot-err'}`} />
+                <div
+                  key={f.id}
+                  className={`pf-item ${f.state === 'error' ? 'pf-item-err' : f.state === 'stopped' ? 'pf-item-stopped' : ''}`}
+                  title={f.error ?? f.state}
+                >
+                  <span
+                    className={`pf-dot ${
+                      f.state === 'listening' ? 'pf-dot-ok' : f.state === 'stopped' ? 'pf-dot-stopped' : 'pf-dot-err'
+                    }`}
+                  />
                   <span className="pf-rule">
                     :{f.localPort} &rarr; {f.remoteHost}:{f.remotePort}
                   </span>
+                  {f.state !== 'listening' && (
+                    <span className="pf-state">{f.state}</span>
+                  )}
                   {f.activeConnections > 0 && (
                     <span className="pf-conns">{f.activeConnections} conn</span>
                   )}

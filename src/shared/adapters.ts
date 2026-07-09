@@ -29,19 +29,23 @@ export interface DetectContext {
   processName?: string
 }
 
-const has = (haystack: string[], needle: string | RegExp): boolean =>
-  haystack.some((l) => (typeof needle === 'string' ? l.includes(needle) : needle.test(l)))
+const joined = (ctx: DetectContext): string =>
+  [...ctx.recentOutput.slice(-40), ctx.currentLine].join('\n')
 
-/** Claude Code: a REPL whose banner / prompts mention "claude". */
+/** Strong Claude Code signals — avoid locking on a casual "claude" mention. */
+const CLAUDE_STRONG =
+  /claude\s*code|welcome to claude|anthropic.*claude|\bclaude\b.*\bv?\d+\.\d+/i
+
+/** Strong Codex signals. */
+const CODEX_STRONG =
+  /openai\s*codex|welcome to codex|\bcodex\b.*\bv?\d+\.\d+|codex\s*cli/i
+
+/** Claude Code: banner / process name / strong versioned mention. */
 export const claudeAdapter: ProviderAdapter = {
   id: 'claude',
   detect(ctx) {
-    const all = [...ctx.recentOutput, ctx.currentLine]
     if (ctx.processName === 'claude') return true
-    if (has(all, /\bclaude\b/i)) return true
-    // Claude Code's interactive prompt marker
-    if (has(ctx.recentOutput, /^>\s*$/m)) return false
-    return false
+    return CLAUDE_STRONG.test(joined(ctx))
   },
   supportsNativeImagePaste() {
     return false
@@ -57,32 +61,23 @@ export const claudeAdapter: ProviderAdapter = {
 /**
  * Codex CLI:
  *  - Non-interactive / command mode: `codex -i <path> "<prompt>"`.
- *  - Interactive session: native composer paste is best, but as a safe
- *    baseline we hand the path with a short instruction. We never emit a
- *    bare `codex` command while already inside Codex (that would nest).
+ *  - Interactive session: path-based instruction (never nest `codex`).
  */
 export const codexAdapter: ProviderAdapter = {
   id: 'codex',
   detect(ctx) {
-    const all = [...ctx.recentOutput, ctx.currentLine]
     if (ctx.processName === 'codex') return true
-    if (has(all, /\bcodex\b/i)) return true
-    return false
+    return CODEX_STRONG.test(joined(ctx))
   },
   supportsNativeImagePaste(session) {
-    // Enhancement only; we only claim support when explicitly flagged.
     return session.nativePasteAvailable
   },
   formatImageReference(remotePath, prompt, session) {
     const path = unquotedPath(remotePath)
     const text = (prompt ?? 'Analyze this image').trim().replace(/"/g, '\\"')
     if (!session.interactive) {
-      // Command mode: a fresh invocation with the image flag.
       return `codex -i ${path} "${text}"`
     }
-    // Inside an interactive Codex session: prefer path-based instruction.
-    // (When native paste is detectable in a later version, we'd simulate
-    //  a clipboard paste here instead.)
     return `${text}: ${path}`
   }
 }

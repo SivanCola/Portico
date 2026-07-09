@@ -616,6 +616,17 @@ select {
 .pf-dot-err {
   background: var(--err);
 }
+.pf-dot-stopped {
+  background: var(--warn);
+}
+.pf-item-stopped {
+  opacity: 0.75;
+}
+.pf-state {
+  color: var(--text-dim);
+  font-size: 10px;
+  text-transform: uppercase;
+}
 .pf-rule {
   color: var(--text);
   flex: 1;
@@ -684,4 +695,89 @@ select {
 .update-banner .actions {
   display: flex;
   gap: 8px;
+}
+
+/* ---- connect form hints ---- */
+.connect-card .hint {
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* ---- shelf header ---- */
+.shelf header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.shelf-header-actions {
+  display: flex;
+  gap: 4px;
+}
+
+/* ---- paste prompt modal ---- */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 80;
+}
+.modal {
+  width: min(420px, 90vw);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.modal h3 {
+  margin: 0;
+  font-size: 14px;
+}
+.modal .hint {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.modal input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 13px;
+}
+.modal input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ---- drag & drop overlay ---- */
+.app.drag-over .workspace {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+}
+.drop-overlay {
+  position: fixed;
+  inset: 44px 0 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(14, 17, 22, 0.72);
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 600;
+  z-index: 70;
+  pointer-events: none;
 }

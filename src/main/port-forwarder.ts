@@ -17,6 +17,8 @@ interface ForwardEntry {
 
 export class PortForwarder extends EventEmitter {
   private forwards = new Map<string, ForwardEntry>()
+  /** When false, new local connections are rejected and state shows stopped. */
+  private tunnelsEnabled = true
 
   constructor(private readonly getClient: () => Client | null) {
     super()
@@ -104,20 +106,28 @@ export class PortForwarder extends EventEmitter {
     }))
   }
 
+  /** Drop live tunnels and mark forwards stopped until resume (SSH reconnect). */
   dropActiveTunnels(): void {
+    this.tunnelsEnabled = false
     for (const entry of this.forwards.values()) {
       for (const sock of entry.activeSockets) {
         sock.destroy()
       }
       entry.activeSockets.clear()
+      if (entry.state !== 'error') {
+        entry.state = 'stopped'
+        entry.error = 'SSH disconnected — waiting to reconnect'
+      }
     }
     this.emitChange()
   }
 
   resumeAll(): void {
+    this.tunnelsEnabled = true
     for (const entry of this.forwards.values()) {
       if (!entry.server.listening) {
         entry.state = 'stopped'
+        entry.error = 'Local listener stopped'
       } else {
         entry.state = 'listening'
         entry.error = undefined
@@ -127,6 +137,7 @@ export class PortForwarder extends EventEmitter {
   }
 
   destroyAll(): void {
+    this.tunnelsEnabled = false
     for (const entry of this.forwards.values()) {
       this.closeEntry(entry)
     }
@@ -135,9 +146,20 @@ export class PortForwarder extends EventEmitter {
   }
 
   private handleConnection(entry: ForwardEntry, localSocket: Socket): void {
+    if (!this.tunnelsEnabled) {
+      entry.state = 'stopped'
+      entry.error = entry.error ?? 'SSH disconnected — waiting to reconnect'
+      localSocket.destroy()
+      this.emitChange()
+      return
+    }
+
     const client = this.getClient()
     if (!client) {
+      entry.state = 'stopped'
+      entry.error = 'No SSH client'
       localSocket.destroy()
+      this.emitChange()
       return
     }
 
@@ -157,19 +179,37 @@ export class PortForwarder extends EventEmitter {
             remotePort: entry.rule.remotePort,
             err
           })
+          entry.state = 'error'
+          entry.error = err.message
           localSocket.destroy()
+          this.emitChange()
           return
         }
 
         entry.activeSockets.add(localSocket)
+        if (entry.state !== 'listening') {
+          entry.state = 'listening'
+          entry.error = undefined
+        }
         this.emitChange()
 
         localSocket.pipe(sshStream).pipe(localSocket)
 
+        let cleaned = false
         const cleanup = () => {
+          if (cleaned) return
+          cleaned = true
           entry.activeSockets.delete(localSocket)
-          localSocket.destroy()
-          sshStream.destroy()
+          try {
+            localSocket.destroy()
+          } catch {
+            /* ignore */
+          }
+          try {
+            sshStream.destroy()
+          } catch {
+            /* ignore */
+          }
           this.emitChange()
         }
 

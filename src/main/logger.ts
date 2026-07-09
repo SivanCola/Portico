@@ -75,11 +75,18 @@ function formatMetaValue(v: unknown): string {
  * Passwords, private-key paths, and passphrases are never emitted.
  */
 export function redactTarget(t: SshTarget): Record<string, unknown> {
+  const auth = t.useAgent
+    ? 'agent'
+    : t.password
+      ? 'password'
+      : t.privateKeyPath
+        ? 'key'
+        : 'none'
   return {
     host: t.host,
     port: t.port,
     user: t.user,
-    auth: t.password ? 'password' : t.privateKeyPath ? 'key' : 'none'
+    auth
   }
 }
 

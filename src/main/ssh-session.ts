@@ -21,6 +21,7 @@ import { homedir } from 'node:os'
 import { readFile } from 'node:fs/promises'
 import { PORTICO_REMOTE_DIR } from '@shared/constants.js'
 import type { SshTarget } from '@shared/types.js'
+import { createHostVerifier } from './host-key.js'
 import { getLogger, redactTarget } from './logger.js'
 
 /** Expand a leading `~` / `~/...` to the local home directory. */
@@ -31,6 +32,8 @@ export function expandHomePath(p: string): string {
 }
 
 const log = getLogger()
+
+export type ConnectPhaseStep = 'tcp' | 'auth' | 'shell' | 'home'
 
 export interface SshSessionEvents {
   data: (chunk: string) => void
@@ -45,6 +48,8 @@ export interface ResizeArgs {
 
 export interface ConnectOptions {
   onReady?: (info: { initialCwd: string }) => void
+  /** Fired as the handshake progresses (tcp → auth → shell → home). */
+  onPhase?: (phase: ConnectPhaseStep) => void
 }
 
 export class SshSession extends EventEmitter {
@@ -89,80 +94,149 @@ export class SshSession extends EventEmitter {
       try {
         privateKey = await readFile(keyPath)
       } catch (e) {
+        this.client = null
         throw Object.assign(new Error(`Cannot read private key: ${(e as Error).message}`), {
           code: 'SSH_KEY'
         })
       }
     }
 
-    await new Promise<void>((resolve, reject) => {
-      const onErr = (err: Error) => {
-        log.error('ssh', 'connect failed', { ...redactTarget(t), err })
-        reject(Object.assign(new Error(err.message), { code: 'SSH_CONNECT' }))
+    let agent: string | undefined
+    if (t.useAgent) {
+      const sock = process.env.SSH_AUTH_SOCK
+      if (sock) {
+        agent = sock
+      } else if (process.platform === 'win32') {
+        // Pageant is the common Windows agent; ssh2 accepts the magic name.
+        agent = 'pageant'
+      } else {
+        this.client = null
+        throw Object.assign(
+          new Error('SSH agent not available (SSH_AUTH_SOCK unset).'),
+          { code: 'SSH_AGENT' }
+        )
       }
+    }
 
-      client.once('ready', () => {
-        client.removeListener('error', onErr)
-        resolve()
-      })
-      client.once('error', onErr)
+    try {
+      opts.onPhase?.('tcp')
+      opts.onPhase?.('auth')
 
-      client.connect({
-        host: t.host,
-        port: t.port,
-        username: t.user,
-        password: t.password,
-        privateKey,
-        passphrase: t.privateKeyPassphrase,
-        readyTimeout: 20_000,
-        keepaliveInterval: 15_000,
-        keepaliveCountMax: 3
-      })
-    })
-
-    // Detect unexpected connection loss at the transport level.
-    client.on('close', () => {
-      if (!this.userDisconnect && this.connected) {
-        log.warn('ssh', 'transport closed unexpectedly', redactTarget(t))
-        this.connected = false
-        this.sftp = null
-        this.emit('close', { intentional: false })
-      }
-    })
-
-    // Open an interactive PTY shell.
-    await new Promise<void>((resolve, reject) => {
-      client.shell(
-        { term: 'xterm-256color', cols: 80, rows: 24 },
-        (err, stream) => {
-          if (err) {
-            log.error('ssh', 'shell open failed', { ...redactTarget(t), err })
-            return reject(Object.assign(new Error(err.message), { code: 'SSH_SHELL' }))
-          }
-          this.stream = stream
-          stream.on('data', (d: Buffer) => {
-            const text = d.toString('utf8')
-            this.pushBuffer(text)
-            this.emit('data', text)
-          })
-          stream.on('close', () => {
-            if (!this.userDisconnect && this.connected) {
-              log.warn('ssh', 'shell stream closed unexpectedly', redactTarget(t))
-              this.connected = false
-              this.sftp = null
-              this.emit('close', { intentional: false })
-            }
-          })
-          resolve()
+      await new Promise<void>((resolve, reject) => {
+        const onErr = (err: Error) => {
+          const code =
+            /Host denied|verification failed/i.test(err.message) ? 'HOST_KEY_MISMATCH' : 'SSH_CONNECT'
+          const message =
+            code === 'HOST_KEY_MISMATCH'
+              ? `HOST_KEY_MISMATCH: remote host key for ${t.host}:${t.port} does not match known_hosts.`
+              : err.message
+          log.error('ssh', 'connect failed', { ...redactTarget(t), err, code })
+          reject(Object.assign(new Error(message), { code }))
         }
-      )
-    })
 
-    // Resolve the home directory and our blob dir absolutely.
-    this.initialCwd = await this.runAndCapture('echo $HOME').then((s) => s.trim())
-    this.connected = true
-    opts.onReady?.({ initialCwd: this.initialCwd })
-    return { initialCwd: this.initialCwd }
+        client.once('ready', () => {
+          client.removeListener('error', onErr)
+          resolve()
+        })
+        client.once('error', onErr)
+
+        client.connect({
+          host: t.host,
+          port: t.port,
+          username: t.user,
+          password: t.password,
+          privateKey,
+          passphrase: t.privateKeyPassphrase,
+          agent,
+          hostVerifier: createHostVerifier(t.host, t.port),
+          readyTimeout: 20_000,
+          keepaliveInterval: 15_000,
+          keepaliveCountMax: 3
+        })
+      })
+
+      // Detect unexpected connection loss at the transport level.
+      client.on('close', () => {
+        if (!this.userDisconnect && this.connected) {
+          log.warn('ssh', 'transport closed unexpectedly', redactTarget(t))
+          this.connected = false
+          this.sftp = null
+          this.emit('close', { intentional: false })
+        }
+      })
+
+      // Open an interactive PTY shell.
+      opts.onPhase?.('shell')
+      await new Promise<void>((resolve, reject) => {
+        client.shell(
+          { term: 'xterm-256color', cols: 80, rows: 24 },
+          (err, stream) => {
+            if (err) {
+              log.error('ssh', 'shell open failed', { ...redactTarget(t), err })
+              return reject(Object.assign(new Error(err.message), { code: 'SSH_SHELL' }))
+            }
+            this.stream = stream
+            stream.on('data', (d: Buffer) => {
+              const text = d.toString('utf8')
+              this.pushBuffer(text)
+              this.emit('data', text)
+            })
+            stream.on('close', () => {
+              if (!this.userDisconnect && this.connected) {
+                log.warn('ssh', 'shell stream closed unexpectedly', redactTarget(t))
+                this.connected = false
+                this.sftp = null
+                this.emit('close', { intentional: false })
+              }
+            })
+            resolve()
+          }
+        )
+      })
+
+      // Resolve the home directory and our blob dir absolutely.
+      opts.onPhase?.('home')
+      this.initialCwd = await this.runAndCapture('echo $HOME', { timeoutMs: 10_000 }).then((s) =>
+        s.trim()
+      )
+      this.connected = true
+      opts.onReady?.({ initialCwd: this.initialCwd })
+      return { initialCwd: this.initialCwd }
+    } catch (e) {
+      // Tear down any half-open client/stream so we never leak orphans.
+      // Do not emit 'close' — the connect() promise rejection is the signal.
+      await this.teardownQuiet().catch(() => {})
+      throw e
+    }
+  }
+
+  /** End client/stream/sftp without emitting lifecycle events. */
+  private async teardownQuiet(): Promise<void> {
+    this.userDisconnect = true
+    const sftp = this.sftp
+    const stream = this.stream
+    const client = this.client
+    this.sftp = null
+    this.stream = null
+    this.client = null
+    this.connected = false
+    try {
+      stream?.close()
+    } catch {
+      /* ignore */
+    }
+    try {
+      sftp?.end()
+    } catch {
+      /* ignore */
+    }
+    if (client) {
+      try {
+        client.end()
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   private pushBuffer(text: string): void {

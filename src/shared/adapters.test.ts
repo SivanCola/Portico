@@ -91,9 +91,18 @@ describe('detectProvider', () => {
     expect(detectProvider({ recentOutput: ['ubuntu@host:~$ '], currentLine: '' })).toBe('shell')
   })
 
-  it('prefers claude over codex when both appear (priority order)', () => {
+  it('ignores casual mentions without a strong banner', () => {
     expect(
       detectProvider({ recentOutput: ['claude and codex mentioned'], currentLine: '' })
+    ).toBe('shell')
+  })
+
+  it('prefers claude over codex when both strong banners appear', () => {
+    expect(
+      detectProvider({
+        recentOutput: ['Welcome to Claude Code v1.2.3', 'OpenAI Codex v0.1.0'],
+        currentLine: ''
+      })
     ).toBe('claude')
   })
 })

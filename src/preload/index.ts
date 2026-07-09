@@ -28,6 +28,8 @@ const api: PorticoApi = {
   uploadClipboard: () => ipcRenderer.invoke(IPC.UPLOAD_CLIPBOARD),
   pasteRemotePath: (remotePath, prompt) =>
     ipcRenderer.invoke(IPC.PASTE_REMOTE_PATH, { remotePath, prompt }),
+  uploadLocalImage: (args) => ipcRenderer.invoke(IPC.UPLOAD_LOCAL_IMAGE, args),
+  pickImageFile: () => ipcRenderer.invoke(IPC.PICK_IMAGE_FILE),
   // Session
   getSession: () => ipcRenderer.invoke(IPC.GET_SESSION),
   setProvider: (provider) => ipcRenderer.invoke(IPC.SET_PROVIDER, provider),
@@ -40,6 +42,7 @@ const api: PorticoApi = {
   // Shelf
   shelfList: () => ipcRenderer.invoke(IPC.SHELF_LIST),
   shelfClear: () => ipcRenderer.invoke(IPC.SHELF_CLEAR),
+  shelfRemove: (id) => ipcRenderer.invoke(IPC.SHELF_REMOVE, id),
   onShelfItemUpdated: (cb) => {
     const h = (_e: IpcRendererEvent, item: ShelfItem) => cb(item)
     ipcRenderer.on(IPC.SHELF_ITEM_UPDATED, h)

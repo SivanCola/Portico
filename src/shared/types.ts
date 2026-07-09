@@ -7,6 +7,9 @@ import type { ReleaseChannel, UpdateChannel } from './channel.js'
 /** Identifiers for the AI coding providers Portico knows how to target. */
 export type ProviderId = 'claude' | 'codex' | 'shell'
 
+/** How the user authenticates to the SSH host. */
+export type AuthMode = 'password' | 'key' | 'agent'
+
 /** A connection target plus optional credentials. */
 export interface SshTarget {
   id: string
@@ -20,6 +23,11 @@ export interface SshTarget {
   privateKeyPath?: string
   /** Passphrase for the private key, when needed. */
   privateKeyPassphrase?: string
+  /**
+   * Use the local SSH agent (`SSH_AUTH_SOCK`). When true, password/key are
+   * ignored unless the agent cannot authenticate.
+   */
+  useAgent?: boolean
 }
 
 /** What a provider adapter needs to decide how to format a reference. */
@@ -28,9 +36,9 @@ export interface ProviderSession {
   provider: ProviderId
   /**
    * Whether the user is inside an interactive CLI session (vs bare shell
-   * command mode). MVP always runs an interactive PTY, so this stays `true`
-   * unless a future build detects a non-interactive invocation. Codex's
-   * `codex -i` formatting is reserved for `interactive: false`.
+   * command mode). MVP always runs an interactive PTY, so this stays `true`.
+   * Codex's `codex -i` formatting is reserved for `interactive: false` and is
+   * exercised in unit tests / future non-interactive paths.
    */
   interactive: boolean
   /** Whether the adapter may attempt native clipboard-image paste. */
@@ -77,6 +85,15 @@ export interface ShelfItem {
 
 /** Connection lifecycle state. */
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting'
+
+/** Fine-grained phase while `connecting` (shown in the connection form). */
+export type ConnectPhase =
+  | 'resolving'
+  | 'tcp'
+  | 'auth'
+  | 'shell'
+  | 'home'
+  | 'ready'
 
 /** Definition of a single local-to-remote port forward. */
 export interface PortForwardRule {

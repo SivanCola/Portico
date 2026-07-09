@@ -9,7 +9,7 @@ import {
   appName,
   updateChannel
 } from '@shared/channel.js'
-import { IPC, type ConnectResult, type ConnStatePayload, type PasteImageArgs, type StatusPayload } from '@shared/ipc.js'
+import { IPC, type ConnectResult, type ConnStatePayload, type PasteImageArgs, type StatusPayload, type UploadLocalImageArgs } from '@shared/ipc.js'
 import { ok } from '@shared/result.js'
 import type {
   AppInfo,
@@ -231,6 +231,13 @@ function registerIpc(c: PorticoController): void {
   // Shelf
   handle(IPC.SHELF_LIST, () => c.shelfList())
   handle(IPC.SHELF_CLEAR, () => c.shelfClear())
+  handleArg<string, Result<true>>(IPC.SHELF_REMOVE, (id) => c.shelfRemove(id))
+
+  // Local image upload
+  handleArg<UploadLocalImageArgs, Result<UploadedBlob>>(
+    IPC.UPLOAD_LOCAL_IMAGE,
+    (a) => c.uploadLocalImage(a)
+  )
 
   // Remote cache
   handle(IPC.CLEAR_REMOTE_CACHE, () => c.clearRemoteCache())
@@ -257,6 +264,24 @@ function registerIpc(c: PorticoController): void {
       title: 'Select SSH private key',
       defaultPath: join(homedir(), '.ssh'),
       properties: ['openFile' as const]
+    }
+    const result = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, opts)
+      : await dialog.showOpenDialog(opts)
+    if (result.canceled || result.filePaths.length === 0) {
+      return ok(null as string | null)
+    }
+    return ok(result.filePaths[0] as string)
+  })
+
+  // Image file picker (drag/drop alternative)
+  handle(IPC.PICK_IMAGE_FILE, async () => {
+    const opts = {
+      title: 'Select image',
+      properties: ['openFile' as const],
+      filters: [
+        { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }
+      ]
     }
     const result = mainWindow
       ? await dialog.showOpenDialog(mainWindow, opts)

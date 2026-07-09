@@ -1,11 +1,11 @@
 import { useState } from 'react'
-import type { SshTarget } from '@shared/types.js'
+import type { AuthMode, ConnectPhase, SshTarget } from '@shared/types.js'
 
 interface Props {
   onConnect: (t: SshTarget) => Promise<string | null>
+  /** Live connect phase from main while busy. */
+  phase?: ConnectPhase | null
 }
-
-type AuthMode = 'password' | 'key'
 
 /** A saved connection target. Credentials are never persisted. */
 interface RecentTarget {
@@ -18,6 +18,15 @@ interface RecentTarget {
 
 const RECENT_KEY = 'portico.recentTargets'
 const RECENT_MAX = 5
+
+const PHASE_LABEL: Record<ConnectPhase, string> = {
+  resolving: 'Preparing…',
+  tcp: 'Connecting…',
+  auth: 'Authenticating…',
+  shell: 'Opening shell…',
+  home: 'Resolving home…',
+  ready: 'Ready'
+}
 
 function loadRecent(): RecentTarget[] {
   try {
@@ -44,7 +53,14 @@ function saveRecent(t: RecentTarget): RecentTarget[] {
   return next
 }
 
-export function ConnectionForm({ onConnect }: Props) {
+function parseUserHost(raw: string): { user?: string; host: string } {
+  const s = raw.trim()
+  const at = s.lastIndexOf('@')
+  if (at > 0) return { user: s.slice(0, at), host: s.slice(at + 1) }
+  return { host: s }
+}
+
+export function ConnectionForm({ onConnect, phase }: Props) {
   const [host, setHost] = useState('')
   const [user, setUser] = useState('')
   const [port, setPort] = useState(22)
@@ -65,18 +81,30 @@ export function ConnectionForm({ onConnect }: Props) {
     setError(null)
   }
 
+  const onHostBlur = () => {
+    const parsed = parseUserHost(host)
+    if (parsed.user) {
+      setUser(parsed.user)
+      setHost(parsed.host)
+    }
+  }
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError(null)
     setBusy(true)
+    const parsed = parseUserHost(host)
+    const finalUser = (parsed.user || user).trim()
+    const finalHost = parsed.host.trim()
     const target: SshTarget = {
-      id: `${user}@${host}`,
-      host: host.trim(),
-      user: user.trim(),
+      id: `${finalUser}@${finalHost}`,
+      host: finalHost,
+      user: finalUser,
       port: Number(port) || 22,
       password: auth === 'password' ? password || undefined : undefined,
       privateKeyPath: auth === 'key' ? privateKeyPath || undefined : undefined,
-      privateKeyPassphrase: auth === 'key' ? passphrase || undefined : undefined
+      privateKeyPassphrase: auth === 'key' ? passphrase || undefined : undefined,
+      useAgent: auth === 'agent' ? true : undefined
     }
     const err = await onConnect(target)
     setBusy(false)
@@ -94,6 +122,14 @@ export function ConnectionForm({ onConnect }: Props) {
       )
     }
   }
+
+  const canSubmit =
+    !busy &&
+    !!host.trim() &&
+    !!(user.trim() || host.includes('@')) &&
+    (auth === 'agent' ||
+      (auth === 'password' && !!password) ||
+      (auth === 'key' && !!privateKeyPath))
 
   return (
     <form className="connect-card" onSubmit={submit}>
@@ -118,7 +154,8 @@ export function ConnectionForm({ onConnect }: Props) {
         <input
           value={host}
           onChange={(e) => setHost(e.target.value)}
-          placeholder="10.0.0.4 or hostname"
+          onBlur={onHostBlur}
+          placeholder="ubuntu@10.0.0.4 or hostname"
           autoFocus
           spellCheck={false}
         />
@@ -154,6 +191,13 @@ export function ConnectionForm({ onConnect }: Props) {
         >
           Private key
         </button>
+        <button
+          type="button"
+          className={`btn ghost ${auth === 'agent' ? 'primary' : ''}`}
+          onClick={() => setAuth('agent')}
+        >
+          SSH agent
+        </button>
       </div>
       {auth === 'password' ? (
         <div className="field">
@@ -165,7 +209,7 @@ export function ConnectionForm({ onConnect }: Props) {
             placeholder="••••••••"
           />
         </div>
-      ) : (
+      ) : auth === 'key' ? (
         <>
           <div className="field">
             <label>Private key path</label>
@@ -198,10 +242,15 @@ export function ConnectionForm({ onConnect }: Props) {
             />
           </div>
         </>
+      ) : (
+        <div className="field">
+          <label>SSH agent</label>
+          <div className="hint">Uses SSH_AUTH_SOCK on this machine. No password or key file needed.</div>
+        </div>
       )}
       {error && <div className="err">{error}</div>}
-      <button className="btn primary" type="submit" disabled={busy || !host || !user}>
-        {busy ? 'Connecting…' : 'Connect'}
+      <button className="btn primary" type="submit" disabled={!canSubmit}>
+        {busy ? (phase ? PHASE_LABEL[phase] : 'Connecting…') : 'Connect'}
       </button>
     </form>
   )

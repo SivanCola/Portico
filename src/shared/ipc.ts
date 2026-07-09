@@ -11,6 +11,7 @@
  */
 import type {
   AppInfo,
+  ConnectPhase,
   ConnectionState,
   PortForwardRule,
   PortForwardStatus,
@@ -49,9 +50,13 @@ export const IPC = {
 
   // Shelf
   SHELF_LIST: 'portico:shelf:list',
-  SHELF_ADD: 'portico:shelf:add',
   SHELF_CLEAR: 'portico:shelf:clear',
+  SHELF_REMOVE: 'portico:shelf:remove',
   SHELF_ITEM_UPDATED: 'portico:shelf:item-updated',
+
+  // Local image file upload (drag/drop or picker)
+  UPLOAD_LOCAL_IMAGE: 'portico:uploadLocalImage',
+  PICK_IMAGE_FILE: 'portico:dialog:pickImageFile',
 
   // Remote cache maintenance
   CLEAR_REMOTE_CACHE: 'portico:cache:clear',
@@ -106,6 +111,17 @@ export interface ConnStatePayload {
   attempt?: number
   nextRetryIn?: number
   reason?: string
+  /** Fine-grained phase while connecting. */
+  phase?: ConnectPhase
+}
+
+/** Args for uploading a local image file (path on disk). */
+export interface UploadLocalImageArgs {
+  path: string
+  prompt?: string
+  /** When true, inject provider prompt after upload (default true). */
+  inject?: boolean
+  provider?: ProviderId
 }
 
 /**
@@ -128,6 +144,8 @@ export interface PorticoApi {
   pasteImage(args: PasteImageArgs): Promise<Result<UploadedBlob>>
   uploadClipboard(): Promise<Result<UploadedBlob>>
   pasteRemotePath(remotePath: string, prompt?: string): Promise<Result<true>>
+  uploadLocalImage(args: UploadLocalImageArgs): Promise<Result<UploadedBlob>>
+  pickImageFile(): Promise<Result<string | null>>
 
   // Session
   getSession(): Promise<Result<ProviderSession>>
@@ -138,6 +156,7 @@ export interface PorticoApi {
   // Shelf
   shelfList(): Promise<Result<ShelfItem[]>>
   shelfClear(): Promise<Result<true>>
+  shelfRemove(id: string): Promise<Result<true>>
   onShelfItemUpdated(cb: (item: ShelfItem) => void): () => void
 
   // Remote cache

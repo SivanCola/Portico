@@ -101,6 +101,14 @@ describe('redactTarget', () => {
     expect(
       redactTarget({ ...full, password: undefined, privateKeyPath: undefined }).auth
     ).toBe('none')
+    expect(
+      redactTarget({
+        ...full,
+        password: undefined,
+        privateKeyPath: undefined,
+        useAgent: true
+      }).auth
+    ).toBe('agent')
   })
 })
 
