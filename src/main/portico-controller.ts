@@ -1,11 +1,21 @@
-import { BrowserWindow, clipboard } from 'electron'
+import { app, BrowserWindow, clipboard } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { PORTICO_REMOTE_DIR, XTERM_MODE_SOFT_RESET } from '@shared/constants.js'
 import { detectProvider, formatForProvider } from '@shared/adapters.js'
+import { resolveImagePrompt } from '@shared/image-prompt.js'
 import type { PorticoApi } from '@shared/ipc.js'
 import { ok, err } from '@shared/result.js'
 import { transition } from '@shared/session-fsm.js'
+import {
+  canAutoConnectSsh,
+  loadSessionSnapshot,
+  saveSessionSnapshot,
+  targetToPersisted,
+  type PersistedSession,
+  type SessionSnapshot
+} from './session-store.js'
 import type {
+  CommitStagedArgs,
   PasteImageArgs,
   UploadLocalImageArgs,
   ConnectResult,
@@ -32,7 +42,8 @@ import { SshSession } from './ssh-session.js'
 import { LocalSession } from './local-session.js'
 import { PortForwarder } from './port-forwarder.js'
 import { saveLocalBlob, uploadBlob } from './blob-uploader.js'
-import { clipboardHasImage, readClipboardImage, readImageFile } from './clipboard.js'
+import { MAX_PASTE_IMAGES } from '@shared/constants.js'
+import { clipboardHasImage, readClipboardImages, readImageFile } from './clipboard.js'
 import { getLogger, redactTarget } from './logger.js'
 import {
   DEFAULT_TMUX_PREFS,
@@ -96,17 +107,36 @@ class SessionHandle {
   readonly id: SessionId
   readonly createdAt: string
   title: string
+  /** User double-click renamed the tab — do not overwrite on reconnect. */
+  titleUserSet = false
   private kind: SessionKind | null = null
 
   private ssh: SshSession | null = null
   private local: LocalSession | null = null
   private target: SshTarget | null = null
+  /**
+   * Last known SSH target (survives disconnect) for restore / reconnect UI.
+   * Never includes password when serialized.
+   */
+  private lastTarget: SshTarget | null = null
+  /** Last tmux session this tab entered (remote name). */
+  preferredTmuxSession: string | null = null
+  /**
+   * Whether launch should auto-reconnect this tab.
+   * Set from disk snapshot / on successful connect; cleared on intentional disconnect.
+   */
+  wantsAutoConnect = false
   private localShell = ''
   private provider: ProviderId = 'shell'
   private interactive = true
   /** True only after the user manually picks Claude/Codex/Shell in the UI. */
   private providerManual = false
   private shelf: ShelfItem[] = []
+  /**
+   * Local image bytes for `staged` shelf items (not yet uploaded).
+   * Cleared on commit success, remove, or clear.
+   */
+  private stagedImages = new Map<string, NormalizedImage>()
   private connState: ConnectionState = 'disconnected'
   private lastDims: { cols: number; rows: number } | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -135,17 +165,90 @@ class SessionHandle {
     this.title = title ?? 'New session'
   }
 
+  /** Hydrate a disconnected tab from disk snapshot (before auto-connect). */
+  applyPersisted(p: PersistedSession): void {
+    this.title = p.title
+    this.titleUserSet = p.titleUserSet === true
+    this.preferredTmuxSession = p.tmuxSession ?? null
+    this.wantsAutoConnect = p.autoConnect === true
+    if (p.kind === 'local') {
+      this.kind = 'local'
+      this.target = null
+      this.lastTarget = null
+    } else if (p.kind === 'ssh' && p.target) {
+      this.kind = 'ssh'
+      const t: SshTarget = {
+        id: this.id,
+        host: p.target.host,
+        user: p.target.user,
+        port: p.target.port,
+        alias: p.target.alias,
+        privateKeyPath: p.target.privateKeyPath,
+        useAgent: p.target.useAgent
+      }
+      this.lastTarget = t
+      this.target = t
+      if (this.wantsAutoConnect && !canAutoConnectSsh(p.target)) {
+        this.wantsAutoConnect = false
+      }
+    }
+  }
+
+  toPersisted(): PersistedSession {
+    const live = this.target ?? this.lastTarget
+    const kind =
+      this.kind ??
+      (this.local?.isConnected() ? 'local' : live ? 'ssh' : null)
+    const connected = !!(this.ssh?.isConnected() || this.local?.isConnected())
+    if (kind === 'ssh' && live) {
+      const persisted = targetToPersisted(live)
+      const autoConnect =
+        (connected || this.wantsAutoConnect) && canAutoConnectSsh(persisted)
+      return {
+        id: this.id,
+        title: this.title,
+        kind: 'ssh',
+        target: persisted,
+        tmuxSession: this.preferredTmuxSession,
+        autoConnect,
+        titleUserSet: this.titleUserSet
+      }
+    }
+    if (kind === 'local') {
+      return {
+        id: this.id,
+        title: this.title,
+        kind: 'local',
+        target: null,
+        tmuxSession: null,
+        autoConnect: connected || this.wantsAutoConnect,
+        titleUserSet: this.titleUserSet
+      }
+    }
+    // Pure draft — only keep if user renamed it.
+    return {
+      id: this.id,
+      title: this.title,
+      kind: null,
+      target: null,
+      tmuxSession: null,
+      autoConnect: false,
+      titleUserSet: this.titleUserSet
+    }
+  }
+
   summary(): SessionSummary {
+    const t = this.target ?? this.lastTarget
     return {
       id: this.id,
       title: this.title,
       kind: this.kind ?? undefined,
-      target: this.target
+      target: t
         ? {
-            user: this.target.user,
-            host: this.target.host,
-            port: this.target.port,
-            alias: this.target.alias
+            user: t.user,
+            host: t.host,
+            port: t.port,
+            alias: t.alias
           }
         : undefined,
       shell: this.kind === 'local' ? this.localShell || undefined : undefined,
@@ -234,13 +337,14 @@ class SessionHandle {
       this.local = session
       this.kind = 'local'
       this.localShell = session.shellName()
-      this.title = this.localShell || 'Local'
+      if (!this.titleUserSet) this.title = this.localShell || 'Local'
       this.closeHandled = false
       this.osc52.reset()
       this.interactive = true
       this.provider = 'shell'
       this.providerManual = false
       this.cachedProcessHint = undefined
+      this.wantsAutoConnect = true
       this.setConnState('connected', { phase: 'ready' })
       this.pushProviderSession()
       this.host.onSummaryChanged()
@@ -318,7 +422,8 @@ class SessionHandle {
       this.ssh = session
       this.kind = 'ssh'
       this.target = target
-      this.title = defaultTitle(target)
+      this.lastTarget = { ...target }
+      if (!this.titleUserSet) this.title = defaultTitle(target)
       this.closeHandled = false
       this.osc52.reset()
 
@@ -336,6 +441,7 @@ class SessionHandle {
       this.reconnectAttempt = 0
       this.reconnectCancelled = false
 
+      this.wantsAutoConnect = true
       this.setConnState('connected', { phase: 'ready' })
       this.pushProviderSession()
       this.host.onSummaryChanged()
@@ -381,9 +487,11 @@ class SessionHandle {
       /* ignore */
     }
     await this.teardownBackends()
-    this.target = null
-    this.kind = null
+    // Keep lastTarget / preferredTmuxSession for restore; clear live target only.
+    this.target = this.lastTarget
+    this.wantsAutoConnect = false
     this.localShell = ''
+    // Keep kind so the rail still shows local/ssh identity while disconnected.
     this.setConnState('disconnected')
     this.host.onSummaryChanged()
     return ok(true)
@@ -736,7 +844,22 @@ class SessionHandle {
 
   private async maybeEnterTmux(reason: 'connect' | 'reconnect'): Promise<void> {
     try {
-      const r = await this.enterTmux()
+      // Prefer the last tmux this tab used (restore / re-attach).
+      let r: Result<{ action: string; session: string }>
+      if (this.preferredTmuxSession) {
+        r = await this.enterTmux({ attachOnly: this.preferredTmuxSession })
+        if (!r.ok && r.error.code !== 'TMUX_NESTED') {
+          // Session gone — fall back to global prefs.
+          log.info('controller', 'preferred tmux attach failed; falling back to prefs', {
+            sessionId: this.id,
+            tmux: this.preferredTmuxSession,
+            err: r.error.message
+          })
+          r = await this.enterTmux()
+        }
+      } else {
+        r = await this.enterTmux()
+      }
       if (!r.ok) {
         if (
           r.error.code !== 'TMUX_OFF' &&
@@ -755,11 +878,13 @@ class SessionHandle {
         await this.maybeConfigureRemoteClipboard()
         return
       }
+      this.preferredTmuxSession = r.value.session
       log.info('controller', `tmux enter (${reason})`, {
         sessionId: this.id,
         action: r.value.action,
         session: r.value.session
       })
+      this.host.onSummaryChanged()
       await this.maybeConfigureRemoteClipboard()
     } catch (e) {
       log.warn('controller', 'tmux enter failed (ignored)', { err: e as Error })
@@ -841,6 +966,8 @@ class SessionHandle {
       if (!this.ssh?.isConnected()) return err('NOT_CONNECTED', 'Session closed before tmux enter.')
 
       this.ssh.write(`${line}\n`)
+      this.preferredTmuxSession = session
+      this.host.onSummaryChanged()
       this.host.onStatus(
         'info',
         action === 'new'
@@ -864,89 +991,132 @@ class SessionHandle {
     return ok(true)
   }
 
-  async uploadClipboard(): Promise<Result<UploadedBlob>> {
+  /** Stage clipboard image(s) locally — no upload until `commitStaged`. */
+  async pasteImage(_args: PasteImageArgs): Promise<Result<ShelfItem[]>> {
     const gate = this.assertImageBridge()
     if (!gate.ok) return gate
-    return this.doUpload({
-      prompt: undefined,
-      forced: undefined,
-      inject: false,
-      load: () => readClipboardImage()
-    })
+    const images = await readClipboardImages()
+    if (images.length === 0) return err('NO_IMAGE', 'No image found.')
+    return this.stageImages(images)
   }
 
-  async pasteImage(args: PasteImageArgs): Promise<Result<UploadedBlob>> {
+  /** Stage clipboard image(s) (palette “upload” without inject). */
+  async uploadClipboard(): Promise<Result<ShelfItem[]>> {
+    return this.pasteImage({ sessionId: this.id })
+  }
+
+  /** Stage local image file(s) — no upload until `commitStaged`. */
+  async uploadLocalImage(args: UploadLocalImageArgs): Promise<Result<ShelfItem[]>> {
     const gate = this.assertImageBridge()
     if (!gate.ok) return gate
-    return this.doUpload({
-      prompt: args.prompt,
-      forced: args.provider,
-      inject: true,
-      load: () => readClipboardImage()
-    })
+    const paths = (Array.isArray(args.path) ? args.path : [args.path]).filter(Boolean)
+    const pairs: { img: NormalizedImage; sourcePath: string }[] = []
+    for (const p of paths) {
+      try {
+        const img = await readImageFile(p)
+        if (img) pairs.push({ img, sourcePath: p })
+      } catch {
+        /* skip unreadable */
+      }
+    }
+    if (pairs.length === 0) return err('NO_IMAGE', 'No image found.')
+    return this.stageImages(
+      pairs.map((p) => p.img),
+      pairs.map((p) => p.sourcePath)
+    )
   }
 
-  async uploadLocalImage(args: UploadLocalImageArgs): Promise<Result<UploadedBlob>> {
+  /**
+   * Upload every `staged` shelf item, inject a multi-path provider prompt, and
+   * optionally send Enter so Claude Code / Codex submits.
+   */
+  async commitStaged(args: CommitStagedArgs): Promise<Result<UploadedBlob[]>> {
     const gate = this.assertImageBridge()
     if (!gate.ok) return gate
-    return this.doUpload({
-      prompt: args.prompt,
-      forced: args.provider,
-      inject: args.inject !== false,
-      sourcePath: args.path,
-      load: async () => readImageFile(args.path)
-    })
-  }
 
-  private async doUpload(opts: {
-    prompt?: string
-    forced?: ProviderId
-    inject: boolean
-    sourcePath?: string
-    load: () => Promise<NormalizedImage | null>
-  }): Promise<Result<UploadedBlob>> {
-    let placeholderId: string | null = null
+    const staged = this.shelf.filter((i) => i.status === 'staged')
+    if (staged.length === 0) {
+      return err('NO_STAGED', 'No staged images. Press ⌘⇧V to stage, then Enter to send.')
+    }
+
     const ssh = this.ssh
     const local = this.local
     const isLocal = !!local?.isConnected()
+    if (!isLocal && !ssh?.isConnected()) {
+      return err('NOT_CONNECTED', 'Open a local shell or SSH session first.')
+    }
+
+    const inject = args.inject !== false
+    const submit = args.submit !== false && inject
+    // Resolve single/multi stock wording before upload so shelf + inject agree.
+    const prompt = resolveImagePrompt(args.prompt, staged.length)
+    const provider = args.provider ?? this.provider
+    const uploaded: UploadedBlob[] = []
+
     try {
-      if (!isLocal && !ssh?.isConnected()) {
-        return err('NOT_CONNECTED', 'Open a local shell or SSH session first.')
+      for (const item of staged) {
+        const img = this.stagedImages.get(item.id)
+        if (!img) {
+          this.failShelfPlaceholder(item.id, 'Staged image data missing.')
+          continue
+        }
+        this.markShelfUploading(item.id)
+
+        try {
+          const { blob } = isLocal ? await saveLocalBlob(img) : await uploadBlob(ssh!, img)
+          const withPreview: UploadedBlob = {
+            ...blob,
+            previewUrl: item.previewUrl ?? previewDataUrl(img)
+          }
+          uploaded.push(withPreview)
+          this.stagedImages.delete(item.id)
+          this.commitShelfPlaceholder(item.id, withPreview, prompt)
+          log.info('controller', 'staged image committed', {
+            sessionId: this.id,
+            hash: blob.hash,
+            bytes: blob.bytes
+          })
+        } catch (e) {
+          const message = (e as Error).message
+          this.failShelfPlaceholder(item.id, message)
+          log.error('controller', 'staged image upload failed', {
+            sessionId: this.id,
+            id: item.id,
+            err: e as Error
+          })
+        }
       }
-      const img = await opts.load()
-      if (!img) return err('NO_IMAGE', 'No image found.')
 
-      const previewUrl = previewDataUrl(img)
-      placeholderId = this.addShelfPlaceholder(previewUrl, opts.sourcePath)
-
-      const { blob } = isLocal ? await saveLocalBlob(img) : await uploadBlob(ssh!, img)
-      const withPreview: UploadedBlob = { ...blob, previewUrl }
-      log.info('controller', 'image uploaded', {
-        sessionId: this.id,
-        kind: isLocal ? 'local' : 'ssh',
-        hash: blob.hash,
-        bytes: blob.bytes,
-        ext: blob.ext
-      })
+      if (uploaded.length === 0) {
+        return err('UPLOAD_FAILED', 'All staged image uploads failed.')
+      }
 
       if (!this.isBackendLive()) {
-        this.commitShelfPlaceholder(placeholderId, withPreview, opts.prompt)
-        return ok(withPreview)
+        return ok(uploaded)
       }
 
-      const provider = opts.forced ?? this.provider
       const sessionCtx: ProviderSession = {
         provider,
         interactive: this.interactive,
         nativePasteAvailable: false
       }
-      const fragment = formatForProvider(provider, withPreview.remotePath, opts.prompt, sessionCtx)
+      const remotePaths = uploaded.map((b) => b.remotePath)
+      const fragment = formatForProvider(
+        provider,
+        remotePaths.length === 1 ? remotePaths[0]! : remotePaths,
+        prompt,
+        sessionCtx
+      )
 
-      if (opts.inject) {
+      if (inject) {
         try {
           this.inject(fragment, provider)
+          // Claude / Codex interactive: send Enter so the prompt is submitted.
+          if (submit && provider !== 'shell') {
+            this.writeRaw('\r')
+          }
         } catch (e) {
-          log.warn('controller', 'inject after upload failed', { err: e as Error })
+          log.warn('controller', 'inject after commit failed', { err: e as Error })
           this.host.onStatus(
             'warn',
             `Uploaded, but inject failed: ${(e as Error).message}`,
@@ -956,15 +1126,80 @@ class SessionHandle {
         }
       }
 
-      this.commitShelfPlaceholder(placeholderId, withPreview, opts.prompt)
-      return ok(withPreview)
+      return ok(uploaded)
     } catch (e) {
       const code = (e as { code?: string }).code ?? 'UPLOAD_FAILED'
       const message = (e as Error).message
-      log.error('controller', 'image upload failed', { sessionId: this.id, code, err: e as Error })
-      if (placeholderId) this.failShelfPlaceholder(placeholderId, message)
+      log.error('controller', 'commit staged failed', { sessionId: this.id, code, err: e as Error })
       return err(code, message)
     }
+  }
+
+  /**
+   * Hold images in the shelf as `staged` (local preview only).
+   * Cap total staged items at MAX_PASTE_IMAGES.
+   */
+  private stageImages(
+    images: NormalizedImage[],
+    sourcePaths?: string[]
+  ): Result<ShelfItem[]> {
+    const already = this.shelf.filter((i) => i.status === 'staged').length
+    const room = Math.max(0, MAX_PASTE_IMAGES - already)
+    if (room === 0) {
+      return err(
+        'STAGE_FULL',
+        `Already ${MAX_PASTE_IMAGES} staged images. Send or remove some first.`
+      )
+    }
+    const take = images.slice(0, room)
+    const items: ShelfItem[] = []
+    for (let i = 0; i < take.length; i++) {
+      const img = take[i]!
+      const id = randomUUID()
+      this.stagedImages.set(id, img)
+      const item: ShelfItem = {
+        id,
+        remotePath: '',
+        hash: '',
+        ext: img.ext,
+        bytes: img.data.byteLength,
+        status: 'staged',
+        uploadedAt: new Date().toISOString(),
+        previewUrl: previewDataUrl(img),
+        sourcePath: sourcePaths?.[i]
+      }
+      this.shelf.unshift(item)
+      this.host.onShelf(this.id, item)
+      items.push(item)
+    }
+    if (images.length > room) {
+      this.host.onStatus(
+        'warn',
+        `Staged ${room} of ${images.length} (cap ${MAX_PASTE_IMAGES}).`,
+        5000,
+        this.id
+      )
+    }
+    log.info('controller', 'images staged', {
+      sessionId: this.id,
+      added: items.length,
+      totalStaged: this.shelf.filter((i) => i.status === 'staged').length
+    })
+    return ok(items)
+  }
+
+  private markShelfUploading(id: string): void {
+    const idx = this.shelf.findIndex((i) => i.id === id)
+    if (idx === -1) return
+    const updated: ShelfItem = { ...this.shelf[idx], status: 'uploading', error: undefined }
+    this.shelf[idx] = updated
+    this.host.onShelf(this.id, updated)
+  }
+
+  /** Write raw bytes to the active PTY (e.g. CR to submit). */
+  private writeRaw(data: string): void {
+    if (this.local?.isConnected()) this.local.write(data)
+    else this.ssh?.write(data)
   }
 
   async pasteRemotePath(remotePath: string, prompt?: string): Promise<Result<true>> {
@@ -1084,11 +1319,13 @@ class SessionHandle {
   }
 
   shelfClear(): Result<true> {
+    this.stagedImages.clear()
     this.shelf = []
     return ok(true)
   }
 
   shelfRemove(id: string): Result<true> {
+    this.stagedImages.delete(id)
     this.shelf = this.shelf.filter((i) => i.id !== id)
     return ok(true)
   }
@@ -1179,6 +1416,12 @@ function previewDataUrl(img: NormalizedImage): string {
   return `data:${img.mime};base64,${img.data.toString('base64')}`
 }
 
+const DEFAULT_SNAPSHOT_SAFE: SessionSnapshot = {
+  version: 1,
+  sessions: [],
+  restoreOnLaunch: true
+}
+
 /**
  * Multi-session registry: routes IPC by sessionId, holds global flags/prefs.
  */
@@ -1186,6 +1429,12 @@ export class PorticoController {
   private readonly sessions = new Map<SessionId, SessionHandle>()
   private flags: FeatureFlags = { ...DEFAULT_FLAGS }
   private tmuxPrefs: TmuxPrefs = { ...DEFAULT_TMUX_PREFS }
+  /** Persist tab layout + SSH/tmux restore targets. */
+  private restoreOnLaunch = true
+  private persistTimer: ReturnType<typeof setTimeout> | null = null
+  private restoreStarted = false
+  /** Last focused session id (from renderer when available). */
+  private activeSessionId: SessionId | null = null
 
   outputListeners = new Set<(p: { sessionId: SessionId; data: string }) => void>()
   statusListeners = new Set<(s: StatusPayload) => void>()
@@ -1196,8 +1445,165 @@ export class PorticoController {
   sessionsListListeners = new Set<(sessions: SessionSummary[]) => void>()
 
   constructor(private readonly getWindow: () => BrowserWindow | null) {
-    // Start with one draft session so the UI always has a place to connect.
-    this.createSessionInternal()
+    this.hydrateFromDisk()
+  }
+
+  private userDataPath(): string {
+    try {
+      return app.getPath('userData')
+    } catch {
+      return ''
+    }
+  }
+
+  /** Load tab list from disk (no network yet). */
+  private hydrateFromDisk(): void {
+    const ud = this.userDataPath()
+    const snap = ud ? loadSessionSnapshot(ud) : { ...DEFAULT_SNAPSHOT_SAFE }
+    this.restoreOnLaunch = snap.restoreOnLaunch !== false
+    this.activeSessionId = snap.activeSessionId ?? null
+
+    const keep = snap.sessions.filter(
+      (s) => s.kind === 'local' || s.kind === 'ssh' || s.titleUserSet
+    )
+    if (keep.length === 0) {
+      this.createSessionInternal()
+      return
+    }
+    for (const p of keep) {
+      const h = this.createSessionInternal({ id: p.id, title: p.title })
+      h.applyPersisted(p)
+    }
+    log.info('controller', 'hydrated sessions from disk', {
+      count: keep.length,
+      restoreOnLaunch: this.restoreOnLaunch
+    })
+  }
+
+  /**
+   * After IPC + renderer listeners are ready: auto-reconnect saved tabs.
+   * Safe to call once; no-ops if restore is disabled.
+   */
+  async restoreConnections(): Promise<void> {
+    if (this.restoreStarted) return
+    this.restoreStarted = true
+    if (!this.restoreOnLaunch) {
+      log.info('controller', 'session restore disabled by preference')
+      this.pushSessionsList()
+      return
+    }
+
+    const targets = [...this.sessions.values()].filter((h) => h.wantsAutoConnect)
+
+    if (targets.length === 0) {
+      this.pushSessionsList()
+      return
+    }
+
+    this.pushStatus('info', `Restoring ${targets.length} session(s)…`, 4000)
+
+    // Sequential to avoid agent/key thrash; small stagger feels calmer.
+    for (const h of targets) {
+      try {
+        const p = h.toPersisted()
+        if (p.kind === 'local') {
+          const r = await h.connectLocal()
+          if (!r.ok) {
+            log.warn('controller', 'restore local failed', {
+              sessionId: h.id,
+              err: r.error.message
+            })
+          }
+        } else if (p.kind === 'ssh' && p.target) {
+          const target: SshTarget = {
+            id: h.id,
+            host: p.target.host,
+            user: p.target.user,
+            port: p.target.port,
+            alias: p.target.alias,
+            privateKeyPath: p.target.privateKeyPath,
+            useAgent: p.target.useAgent
+          }
+          const r = await h.connect(target)
+          if (!r.ok) {
+            log.warn('controller', 'restore ssh failed', {
+              sessionId: h.id,
+              err: r.error.message
+            })
+            this.pushStatus('warn', `${h.title}: ${r.error.message}`, 6000, h.id)
+          }
+        }
+      } catch (e) {
+        log.error('controller', 'restore session threw', {
+          sessionId: h.id,
+          err: e as Error
+        })
+      }
+      await new Promise((r) => setTimeout(r, 200))
+    }
+    this.pushSessionsList()
+    this.schedulePersist()
+  }
+
+  setRestoreOnLaunch(enabled: boolean): Result<boolean> {
+    this.restoreOnLaunch = enabled
+    this.schedulePersist(true)
+    return ok(this.restoreOnLaunch)
+  }
+
+  getRestoreOnLaunch(): Result<boolean> {
+    return ok(this.restoreOnLaunch)
+  }
+
+  setActiveSessionId(sessionId: SessionId | null): Result<true> {
+    this.activeSessionId = sessionId
+    this.schedulePersist()
+    return ok(true)
+  }
+
+  private schedulePersist(immediate = false): void {
+    if (this.persistTimer) clearTimeout(this.persistTimer)
+    const run = () => {
+      this.persistTimer = null
+      this.persistNow()
+    }
+    if (immediate) run()
+    else this.persistTimer = setTimeout(run, 400)
+  }
+
+  /** Flush tab layout to disk (also call on app quit). */
+  persistNow(): void {
+    const ud = this.userDataPath()
+    if (!ud) return
+    const sessions = [...this.sessions.values()]
+      .map((h) => h.toPersisted())
+      // Drop pure empty drafts unless they're the only tab.
+      .filter((s, _i, arr) => {
+        if (s.kind === 'local' || s.kind === 'ssh') return true
+        if (s.titleUserSet) return true
+        // Keep nothing for blank drafts when other real sessions exist.
+        return arr.every((x) => !x.kind)
+      })
+    // Force autoConnect true for currently connected sessions that can reconnect.
+    const enriched = sessions.map((s) => {
+      const h = this.sessions.get(s.id)
+      if (!h) return s
+      const live = h.isConnected()
+      if (live.ok && live.value) {
+        if (s.kind === 'local') return { ...s, autoConnect: true }
+        if (s.kind === 'ssh' && canAutoConnectSsh(s.target)) {
+          return { ...s, autoConnect: true }
+        }
+      }
+      return s
+    })
+    const snap: SessionSnapshot = {
+      version: 1,
+      restoreOnLaunch: this.restoreOnLaunch,
+      activeSessionId: this.activeSessionId,
+      sessions: enriched
+    }
+    saveSessionSnapshot(ud, snap)
   }
 
   private hostFns(): HandleHost {
@@ -1252,13 +1658,19 @@ export class PorticoController {
           }
         }
       },
-      onSummaryChanged: () => this.pushSessionsList()
+      onSummaryChanged: () => {
+        this.pushSessionsList()
+        this.schedulePersist()
+      }
     }
   }
 
-  private createSessionInternal(title?: string): SessionHandle {
-    const id = randomUUID()
-    const handle = new SessionHandle(id, this.hostFns(), title)
+  private createSessionInternal(opts?: {
+    id?: string
+    title?: string
+  }): SessionHandle {
+    const id = opts?.id ?? randomUUID()
+    const handle = new SessionHandle(id, this.hostFns(), opts?.title)
     this.sessions.set(id, handle)
     return handle
   }
@@ -1290,6 +1702,7 @@ export class PorticoController {
     }
     const h = this.createSessionInternal()
     this.pushSessionsList()
+    this.schedulePersist()
     return ok(h.summary())
   }
 
@@ -1303,6 +1716,7 @@ export class PorticoController {
       this.createSessionInternal()
     }
     this.pushSessionsList()
+    this.schedulePersist(true)
     return ok(true)
   }
 
@@ -1316,7 +1730,9 @@ export class PorticoController {
     const t = title.trim()
     if (!t) return err('INVALID_TITLE', 'Title cannot be empty.')
     r.value.title = t.slice(0, 80)
+    r.value.titleUserSet = true
     this.pushSessionsList()
+    this.schedulePersist()
     return ok(r.value.summary())
   }
 
@@ -1407,22 +1823,28 @@ export class PorticoController {
     return ok(clipboardHasImage())
   }
 
-  async pasteImage(args: PasteImageArgs): Promise<Result<UploadedBlob>> {
+  async pasteImage(args: PasteImageArgs): Promise<Result<ShelfItem[]>> {
     const r = this.require(args.sessionId)
     if (!r.ok) return r
     return r.value.pasteImage(args)
   }
 
-  async uploadClipboard(sessionId: SessionId): Promise<Result<UploadedBlob>> {
+  async uploadClipboard(sessionId: SessionId): Promise<Result<ShelfItem[]>> {
     const r = this.require(sessionId)
     if (!r.ok) return r
     return r.value.uploadClipboard()
   }
 
-  async uploadLocalImage(args: UploadLocalImageArgs): Promise<Result<UploadedBlob>> {
+  async uploadLocalImage(args: UploadLocalImageArgs): Promise<Result<ShelfItem[]>> {
     const r = this.require(args.sessionId)
     if (!r.ok) return r
     return r.value.uploadLocalImage(args)
+  }
+
+  async commitStaged(args: CommitStagedArgs): Promise<Result<UploadedBlob[]>> {
+    const r = this.require(args.sessionId)
+    if (!r.ok) return r
+    return r.value.commitStaged(args)
   }
 
   async pasteRemotePath(

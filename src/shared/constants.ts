@@ -25,6 +25,12 @@ export const RECOMPRESS_JPEG_QUALITY = 80
 /** Longest edge allowed before an image is downscaled. */
 export const MAX_IMAGE_LONG_EDGE = 2560
 
+/**
+ * Max images accepted in one paste / drop / multi-file pick.
+ * Caps runaway Finder multi-selects and keeps inject prompts readable.
+ */
+export const MAX_PASTE_IMAGES = 20
+
 /** Image formats we accept as canonical blob extensions. */
 export const SUPPORTED_IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp'] as const
 export type ImageExt = (typeof SUPPORTED_IMAGE_EXTS)[number]

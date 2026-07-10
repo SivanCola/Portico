@@ -100,6 +100,15 @@ export interface UploadedBlob {
   previewUrl?: string
 }
 
+/**
+ * Shelf item lifecycle:
+ *  - `staged` — local only (⌘⇧V / drop); bytes held in main until commit
+ *  - `uploading` — commit in progress
+ *  - `ready` — uploaded to remote blob store
+ *  - `failed` — last upload attempt failed
+ */
+export type ShelfItemStatus = 'staged' | 'uploading' | 'ready' | 'failed'
+
 /** An entry in the Image Shelf. */
 export interface ShelfItem {
   id: string
@@ -108,10 +117,10 @@ export interface ShelfItem {
   ext: ImageExt
   bytes: number
   prompt?: string
-  /** ISO timestamp of upload. */
+  /** ISO timestamp of stage or upload. */
   uploadedAt: string
   previewUrl?: string
-  status: 'ready' | 'uploading' | 'failed'
+  status: ShelfItemStatus
   error?: string
   /**
    * Local filesystem path when the item came from a file upload (not clipboard).

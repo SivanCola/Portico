@@ -48,7 +48,15 @@ npm test             # vitest unit tests for pure logic
 ## Key bindings
 
 - `⌘/Ctrl + Shift + P` — command palette
-- `⌘/Ctrl + Shift + V` — paste clipboard image into the active provider
+- `⌘/Ctrl + Shift + V` — **stage** clipboard image(s) locally (no upload yet; repeat for more)
+- Enter in the Image Shelf commit bar — upload all staged images, inject paths, and submit to Claude/Codex
+
+## Session restore
+
+Portico saves the left-rail tab layout to `userData/sessions.json` (no passwords).
+On launch it can reopen tabs and auto-reconnect SSH (key or agent) and
+`tmux attach` to each tab’s last tmux session. Toggle under **Settings →
+Restore sessions on launch**.
 
 ## Storage convention
 
@@ -97,7 +105,7 @@ The workflow validates that `package.json` `version` equals the tag (minus the
 
 ## Test plan mapping
 
-- Clipboard paste (bitmap + copied file): `src/main/clipboard.ts`
+- Clipboard stage (bitmap + copied file(s)) then commit on Enter: `src/main/clipboard.ts`, `portico-controller.ts` (`stage` / `commitStaged`)
 - Spaces / non-ASCII paths: `src/shared/hash.test.ts` (`shellQuote`, `blobPath`)
 - Reconnect-safe teardown: `src/main/ssh-session.ts` (`disconnect`)
 - Claude path reference: `src/shared/adapters.test.ts` (claude adapter)

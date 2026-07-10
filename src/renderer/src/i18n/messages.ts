@@ -59,6 +59,8 @@ export type MessageKey =
   | 'settings.general.kindLocal'
   | 'settings.general.kindSsh'
   | 'settings.general.kindAsk'
+  | 'settings.general.restoreSessions'
+  | 'settings.general.restoreSessionsHint'
   | 'connect.host'
   | 'connect.hostPlaceholder'
   | 'connect.user'
@@ -174,6 +176,20 @@ export type MessageKey =
   | 'shelf.copyPath'
   | 'shelf.file'
   | 'shelf.clear'
+  | 'shelf.stagedCount'
+  | 'shelf.sendEnter'
+  | 'shelf.sending'
+  | 'shelf.commitHint'
+  | 'shelf.localOnly'
+  | 'shelf.removeStaged'
+  | 'shelf.status.staged'
+  | 'shelf.status.uploading'
+  | 'shelf.status.ready'
+  | 'shelf.status.failed'
+  | 'status.staged'
+  | 'status.committed'
+  | 'palette.commitStaged'
+  | 'palette.commitStagedHint'
   | 'pf.title'
   | 'pf.add'
   | 'pf.empty'
@@ -216,7 +232,7 @@ const en: Catalog = {
   'topbar.toggleToolSidebar': 'Toggle tool sidebar  ·  ⌘\\',
   'topbar.hideSidebar': 'Hide panel',
   'topbar.showSidebar': 'Show panel',
-  'toolbar.pasteImage': 'Paste image',
+  'toolbar.pasteImage': 'Stage image(s)',
   'toolbar.orFileDropFind': 'or File… / drop · ⌘F find',
   'toolbar.terminalOnlyFind': 'Terminal only · ⌘F find',
   'toolbar.unavailableReconnect': 'unavailable while reconnecting',
@@ -241,8 +257,8 @@ const en: Catalog = {
   'palette.newSession': 'New session',
   'palette.newSessionHint': 'Open a draft connection tab',
   'palette.switchSession': 'Switch to {title}',
-  'drop.overlay': 'Drop image to upload',
-  'drop.warnImage': 'Drop an image file.',
+  'drop.overlay': 'Drop image(s) to stage',
+  'drop.warnImage': 'Drop one or more image files.',
   'drop.pathError': 'Could not resolve dropped file path.',
   'connect.title': 'Connect to a host',
   'connect.hubTitle': 'Open a session',
@@ -259,6 +275,9 @@ const en: Catalog = {
   'settings.general.kindLocal': 'Local shell',
   'settings.general.kindSsh': 'SSH form',
   'settings.general.kindAsk': 'Ask each time',
+  'settings.general.restoreSessions': 'Restore sessions on launch',
+  'settings.general.restoreSessionsHint':
+    'Reopen previous tabs and reconnect SSH (key/agent) + last tmux session. Passwords are never stored.',
   'connect.host': 'Host',
   'connect.hostPlaceholder': 'hostname or SSH alias',
   'connect.user': 'User',
@@ -335,26 +354,28 @@ const en: Catalog = {
   'settings.tmux.tipBuffer':
     'If a tool only copies to the tmux buffer (not OSC 52), paste with prefix + ]. Clipboard sync needs the remote app to emit OSC 52.',
   'settings.image.lead':
-    'How clipboard and file images are uploaded and injected into the remote AI.',
-  'settings.image.defaultPrompt': 'Default paste prompt',
+    'Stage images locally with ⌘⇧V, then press Enter in the shelf to upload and send to the remote AI.',
+  'settings.image.defaultPrompt': 'Default send prompt',
   'settings.image.skipDialog': 'Skip prompt dialog on paste',
-  'settings.image.skipDialogHint': '⌘⇧V uploads immediately with the default prompt',
+  'settings.image.skipDialogHint': 'Legacy: staging no longer opens a dialog (Enter in shelf to send)',
   'settings.image.note':
-    'Images are uploaded to ~/.portico*/blobs on the remote host, then a path reference is injected into the terminal for Claude / Codex / shell.',
+    '⌘⇧V / drop only stages locally. Enter in the image shelf uploads to ~/.portico*/blobs, injects paths, and submits to Claude / Codex.',
   'settings.about.updates': 'Updates',
   'settings.about.check': 'Check for updates',
   'settings.about.install': 'Restart to install',
   'settings.about.dev': 'Running in development (updates disabled).',
   'settings.about.keyboard':
-    'Keyboard: ⌘V text paste · ⌘⇧V image bridge · ⌘, settings · ⌘⇧P palette · ⌘F find',
+    'Keyboard: ⌘V text · ⌘⇧V stage image · Enter in shelf to send · ⌘, settings · ⌘⇧P palette · ⌘F find',
   'settings.about.workflow':
     'Recommended flow: Portico SSH → tmux session → Claude. Disconnect only drops SSH; tmux keeps remote work alive.',
-  'palette.pasteImage': 'Paste Image to Remote AI',
-  'palette.pasteImageHint': 'Upload clipboard image + inject provider prompt  ·  ⌘⇧V',
-  'palette.uploadClipboard': 'Upload Clipboard Image',
-  'palette.uploadClipboardHint': 'Upload without injecting into the terminal',
-  'palette.uploadFile': 'Upload Image File…',
-  'palette.uploadFileHint': 'Pick a local image and paste into the remote AI',
+  'palette.pasteImage': 'Stage Clipboard Image(s)',
+  'palette.pasteImageHint': 'Add to local queue (no upload yet)  ·  ⌘⇧V',
+  'palette.uploadClipboard': 'Stage Clipboard Image(s)',
+  'palette.uploadClipboardHint': 'Same as paste — stage without uploading',
+  'palette.uploadFile': 'Stage Image File(s)…',
+  'palette.uploadFileHint': 'Pick local image(s) and stage for later send',
+  'palette.commitStaged': 'Send Staged Images',
+  'palette.commitStagedHint': 'Upload staged images + inject + Enter for Claude',
   'palette.detectProvider': 'Re-detect AI provider',
   'palette.detectProviderHint': 'Heuristically detect Claude / Codex / shell',
   'palette.clearCache': 'Clear Remote Portico Cache',
@@ -376,17 +397,29 @@ const en: Catalog = {
   'palette.installUpdate': 'Restart to Install Update',
   'palette.installUpdateHint': 'Quit and relaunch into the downloaded update',
   'palette.disconnect': 'Disconnect',
-  'paste.titleClipboard': 'Paste clipboard image',
-  'paste.titleFile': 'Upload image file',
-  'paste.hint': 'Prompt injected with the remote image path. Edit before sending.',
+  'paste.titleClipboard': 'Paste clipboard image(s)',
+  'paste.titleFile': 'Upload image file(s)',
+  'paste.hint': 'Stage images with ⌘⇧V; press Enter in the shelf to upload and send to Claude.',
   'paste.upload': 'Upload & paste',
   'paste.defaultPrompt': 'Analyze this image',
   'shelf.title': 'IMAGE SHELF',
-  'shelf.empty': 'Paste ⌘⇧V, drop an image, or pick a file. Images upload to the remote host for AI CLIs.',
+  'shelf.empty': '⌘⇧V stages images locally. Press Enter below to upload and send to Claude / Codex.',
   'shelf.pasteAgain': 'Paste again',
   'shelf.copyPath': 'Copy path',
   'shelf.file': 'File…',
   'shelf.clear': 'Clear',
+  'shelf.stagedCount': '{n} staged — not uploaded yet',
+  'shelf.sendEnter': 'Send ↵',
+  'shelf.sending': 'Sending…',
+  'shelf.commitHint': 'Enter uploads all staged images, injects paths, and submits to Claude.',
+  'shelf.localOnly': '(local — not uploaded)',
+  'shelf.removeStaged': 'Remove',
+  'shelf.status.staged': 'staged',
+  'shelf.status.uploading': 'uploading',
+  'shelf.status.ready': 'ready',
+  'shelf.status.failed': 'failed',
+  'status.staged': 'Staged {n} image(s) · {total} pending · Enter in shelf to send',
+  'status.committed': 'Sent {n} image(s) to remote AI',
   'pf.title': 'Port Forwards',
   'pf.add': '+ Add',
   'pf.empty': 'No port forwards',
@@ -394,7 +427,7 @@ const en: Catalog = {
   'pf.host': 'Host',
   'pf.port': 'Port',
   'status.connectFirst': 'Connect to a host before pasting an image.',
-  'status.noClipboardImage': 'No image in clipboard. Copy a screenshot or image first, then ⌘⇧V.',
+  'status.noClipboardImage': 'No image in clipboard. Copy a screenshot or image, then ⌘⇧V to stage.',
   'status.imageBridgeOff': 'Image bridge is disabled. Turn off Terminal only mode in Settings.',
   'status.clearCacheConfirm':
     'Delete every uploaded image blob on the remote host (~/.portico*/blobs)? This cannot be undone.',
@@ -430,7 +463,7 @@ const zhCN: Catalog = {
   'topbar.toggleToolSidebar': '切换右侧工具栏  ·  ⌘\\',
   'topbar.hideSidebar': '隐藏面板',
   'topbar.showSidebar': '显示面板',
-  'toolbar.pasteImage': '粘贴图片',
+  'toolbar.pasteImage': '暂存图片',
   'toolbar.orFileDropFind': '或 文件… / 拖放 · ⌘F 查找',
   'toolbar.terminalOnlyFind': '仅终端 · ⌘F 查找',
   'toolbar.unavailableReconnect': '重连期间不可用',
@@ -455,8 +488,8 @@ const zhCN: Catalog = {
   'palette.newSession': '新建会话',
   'palette.newSessionHint': '打开一个待连接的会话标签',
   'palette.switchSession': '切换到 {title}',
-  'drop.overlay': '拖放图片以上传',
-  'drop.warnImage': '请拖放图片文件。',
+  'drop.overlay': '拖放图片以暂存',
+  'drop.warnImage': '请拖放一张或多张图片。',
   'drop.pathError': '无法解析拖放文件的路径。',
   'connect.title': '连接到主机',
   'connect.hubTitle': '打开会话',
@@ -473,6 +506,9 @@ const zhCN: Catalog = {
   'settings.general.kindLocal': '本机 Shell',
   'settings.general.kindSsh': 'SSH 表单',
   'settings.general.kindAsk': '每次询问',
+  'settings.general.restoreSessions': '启动时恢复会话',
+  'settings.general.restoreSessionsHint':
+    '重新打开上次的标签，自动 SSH（密钥/agent）并 attach 上次的 tmux。不会保存密码。',
   'connect.host': '主机',
   'connect.hostPlaceholder': '主机名或 SSH 别名',
   'connect.user': '用户',
@@ -548,26 +584,28 @@ const zhCN: Catalog = {
     '命令面板可列会话、attach 或新建。远端 PATH 中需有 tmux。',
   'settings.tmux.tipBuffer':
     '若工具只写入 tmux buffer（未发 OSC 52），请用前缀 + ] 粘贴。剪贴板同步需要远端发出 OSC 52。',
-  'settings.image.lead': '剪贴板与文件图片如何上传并注入到远端 AI。',
-  'settings.image.defaultPrompt': '默认粘贴提示词',
+  'settings.image.lead': '⌘⇧V 先在本地暂存图片，在货架按回车再上传并发送给远端 AI。',
+  'settings.image.defaultPrompt': '默认发送提示词',
   'settings.image.skipDialog': '粘贴时跳过提示词对话框',
-  'settings.image.skipDialogHint': '⌘⇧V 立即用默认提示词上传',
+  'settings.image.skipDialogHint': '兼容项：暂存不再弹窗（在货架按回车发送）',
   'settings.image.note':
-    '图片上传到远端 ~/.portico*/blobs，再把路径引用注入终端，供 Claude / Codex / shell 使用。',
+    '⌘⇧V / 拖放只本地暂存。在图片货架按回车会上传到 ~/.portico*/blobs、注入路径并提交给 Claude / Codex。',
   'settings.about.updates': '更新',
   'settings.about.check': '检查更新',
   'settings.about.install': '重启以安装',
   'settings.about.dev': '开发模式运行（更新已禁用）。',
   'settings.about.keyboard':
-    '快捷键：⌘V 文字粘贴 · ⌘⇧V 图片桥 · ⌘, 设置 · ⌘⇧P 命令面板 · ⌘F 查找',
+    '快捷键：⌘V 文字 · ⌘⇧V 暂存图片 · 货架回车发送 · ⌘, 设置 · ⌘⇧P 命令面板 · ⌘F 查找',
   'settings.about.workflow':
     '推荐流程：Portico SSH → tmux 会话 → Claude。断开只断 SSH；tmux 保持远端工作。',
-  'palette.pasteImage': '粘贴图片到远端 AI',
-  'palette.pasteImageHint': '上传剪贴板图片并注入提供方提示  ·  ⌘⇧V',
-  'palette.uploadClipboard': '上传剪贴板图片',
-  'palette.uploadClipboardHint': '上传但不注入终端',
-  'palette.uploadFile': '上传图片文件…',
-  'palette.uploadFileHint': '选择本地图片并粘贴到远端 AI',
+  'palette.pasteImage': '暂存剪贴板图片',
+  'palette.pasteImageHint': '加入本地队列（先不上传）  ·  ⌘⇧V',
+  'palette.uploadClipboard': '暂存剪贴板图片',
+  'palette.uploadClipboardHint': '与粘贴相同 — 只暂存不上传',
+  'palette.uploadFile': '暂存图片文件…',
+  'palette.uploadFileHint': '选择本地图片加入待发送队列',
+  'palette.commitStaged': '发送已暂存图片',
+  'palette.commitStagedHint': '上传暂存图 → 注入路径 → 回车发给 Claude',
   'palette.detectProvider': '重新检测 AI 提供方',
   'palette.detectProviderHint': '启发式检测 Claude / Codex / shell',
   'palette.clearCache': '清理远端 Portico 缓存',
@@ -591,15 +629,27 @@ const zhCN: Catalog = {
   'palette.disconnect': '断开连接',
   'paste.titleClipboard': '粘贴剪贴板图片',
   'paste.titleFile': '上传图片文件',
-  'paste.hint': '提示词会与远端图片路径一起注入。发送前可编辑。',
+  'paste.hint': '⌘⇧V 只暂存图片；在货架里按回车再上传并发送给 Claude。',
   'paste.upload': '上传并粘贴',
   'paste.defaultPrompt': '分析这张图片',
   'shelf.title': '图片货架',
-  'shelf.empty': '⌘⇧V 粘贴、拖放图片或选择文件。图片会上传到远端主机供 AI CLI 使用。',
+  'shelf.empty': '⌘⇧V 在本地暂存图片。在下方按回车上传并发送给 Claude / Codex。',
   'shelf.pasteAgain': '再次粘贴',
   'shelf.copyPath': '复制路径',
   'shelf.file': '文件…',
   'shelf.clear': '清空',
+  'shelf.stagedCount': '已暂存 {n} 张 — 尚未上传',
+  'shelf.sendEnter': '发送 ↵',
+  'shelf.sending': '发送中…',
+  'shelf.commitHint': '回车会上传全部暂存图、注入路径，并提交给 Claude。',
+  'shelf.localOnly': '（仅本地 — 未上传）',
+  'shelf.removeStaged': '移除',
+  'shelf.status.staged': '暂存',
+  'shelf.status.uploading': '上传中',
+  'shelf.status.ready': '就绪',
+  'shelf.status.failed': '失败',
+  'status.staged': '已暂存 {n} 张 · 共 {total} 张待发送 · 在货架按回车发送',
+  'status.committed': '已发送 {n} 张图片到远端 AI',
   'pf.title': '端口转发',
   'pf.add': '+ 添加',
   'pf.empty': '暂无端口转发',
@@ -607,7 +657,7 @@ const zhCN: Catalog = {
   'pf.host': '主机',
   'pf.port': '端口',
   'status.connectFirst': '请先连接到主机再粘贴图片。',
-  'status.noClipboardImage': '剪贴板中没有图片。请先复制截图或图片，再按 ⌘⇧V。',
+  'status.noClipboardImage': '剪贴板中没有图片。请先复制截图或图片，再按 ⌘⇧V 暂存。',
   'status.imageBridgeOff': '图片桥接已关闭。请在设置中关闭「仅终端模式」。',
   'status.clearCacheConfirm':
     '删除远端主机上所有已上传图片 blob（~/.portico*/blobs）？此操作不可撤销。',

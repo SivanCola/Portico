@@ -28,7 +28,6 @@ import { PortForwards } from './components/PortForwards.js'
 import { SessionRail } from './components/SessionRail.js'
 import { GearIcon, PanelIcon } from './components/icons.js'
 import { CommandPalette, type PaletteAction } from './components/CommandPalette.js'
-import { PastePromptDialog } from './components/PastePromptDialog.js'
 import { SettingsCenter, type SettingsSection } from './components/SettingsCenter.js'
 import {
   loadTerminalSettings,
@@ -69,7 +68,6 @@ function mergeSessionList(
 }
 
 type ConnInfo = { user: string; host: string; alias?: string } | null
-type PromptMode = { kind: 'clipboard' } | { kind: 'file'; path: string } | null
 
 interface SessionUi {
   connState: ConnectionState
@@ -122,8 +120,8 @@ function AppInner({
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null)
-  const [promptMode, setPromptMode] = useState<PromptMode>(null)
   const [dragOver, setDragOver] = useState(false)
+  const [committing, setCommitting] = useState(false)
   const [termSettings, setTermSettings] = useState<TerminalSettings>(() => loadTerminalSettings())
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general')
@@ -165,6 +163,7 @@ function AppInner({
     (id: SessionId) => {
       setActiveSessionId(id)
       clearUnread(id)
+      void window.portico.setActiveSessionId(id)
     },
     [clearUnread]
   )
@@ -178,6 +177,7 @@ function AppInner({
     try {
       await window.portico.setFeatureFlags(toFeatureFlags(s))
       await window.portico.setTmuxPrefs(toTmuxPrefs(s))
+      await window.portico.setRestoreOnLaunch(s.restoreSessionsOnLaunch)
     } catch {
       /* main may not be ready yet */
     }
@@ -255,14 +255,16 @@ function AppInner({
 
   useEffect(() => window.portico.onUpdateStatus(setUpdateStatus), [])
 
-  // ---- bootstrap session list --------------------------------------------
+  // ---- bootstrap session list + restore SSH/tmux tabs --------------------
   useEffect(() => {
-    void window.portico.listSessions().then(async (r) => {
+    void (async () => {
+      const r = await window.portico.listSessions()
       if (!r.ok || r.value.length === 0) return
       const merged = mergeSessionList([], r.value.map((s) => ({ ...s, unread: false })))
       setSessionList(merged)
       const firstId = merged[0]?.id ?? null
       setActiveSessionId((cur) => cur ?? firstId)
+      if (firstId) void window.portico.setActiveSessionId(firstId)
       setById((prev) => {
         const next = { ...prev }
         for (const s of r.value) {
@@ -278,8 +280,36 @@ function AppInner({
         }
         return next
       })
+
+      const settings = loadAppSettings()
+      const hasRestorable = merged.some((s) => s.kind === 'local' || s.kind === 'ssh')
+
+      // Restore saved SSH/tmux tabs (key/agent only). Main hydrates the list already.
+      if (settings.restoreSessionsOnLaunch && hasRestorable) {
+        await window.portico.setRestoreOnLaunch(true)
+        await window.portico.restoreConnections()
+        // Refresh UI after reconnects start
+        const again = await window.portico.listSessions()
+        if (again.ok) {
+          setSessionList((prev) => mergeSessionList(prev, again.value))
+          setById((prev) => {
+            const next = { ...prev }
+            for (const s of again.value) {
+              if (!next[s.id]) next[s.id] = emptyUi({ connState: s.state })
+              else next[s.id] = {
+                ...next[s.id],
+                connState: s.state,
+                everLive: next[s.id].everLive || s.state === 'connected' || s.state === 'connecting'
+              }
+            }
+            return next
+          })
+        }
+        return
+      }
+
       // Cold start: open local shell when preference is local and only a draft exists.
-      const pref = loadAppSettings().defaultSessionKind
+      const pref = settings.defaultSessionKind
       const draft = merged[0]
       if (
         pref === 'local' &&
@@ -297,8 +327,7 @@ function AppInner({
           })
         }
       }
-    })
-    // patchUi is stable enough; avoid re-running on every render
+    })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -532,28 +561,21 @@ function AppInner({
     [activeSessionId, patchUi]
   )
 
-  const runUpload = useCallback(
-    async (mode: PromptMode, prompt: string) => {
-      if (!mode || !activeSessionId) return
-      if (mode.kind === 'clipboard') {
-        const r = await window.portico.pasteImage({ sessionId: activeSessionId, prompt })
-        if (!r.ok) pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
-        else pushStatus({ level: 'info', message: `Pasted → ${r.value.remotePath}`, ttlMs: 4000 })
-      } else {
-        const r = await window.portico.uploadLocalImage({
-          sessionId: activeSessionId,
-          path: mode.path,
-          prompt,
-          inject: true
-        })
-        if (!r.ok) pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
-        else pushStatus({ level: 'info', message: `Pasted → ${r.value.remotePath}`, ttlMs: 4000 })
-      }
-    },
-    [pushStatus, activeSessionId]
-  )
+  /** After staging, ensure the tool sidebar (commit UI) is visible. */
+  const ensureShelfVisible = useCallback(() => {
+    if (!isToolSidebarVisible(appSettings)) {
+      updateAppSettings({ ...appSettings, showToolSidebar: true })
+    }
+  }, [appSettings, updateAppSettings])
 
-  const openPastePrompt = useCallback(async () => {
+  const refreshShelf = useCallback(async () => {
+    if (!activeSessionId) return
+    const sl = await window.portico.shelfList(activeSessionId)
+    if (sl.ok) patchUi(activeSessionId, { shelf: sl.value })
+  }, [activeSessionId, patchUi])
+
+  /** Stage clipboard image(s) only — no upload until commit. */
+  const stageClipboard = useCallback(async () => {
     if (!appSettings.enableImageBridge) {
       pushStatus({ level: 'warn', message: t('status.imageBridgeOff'), ttlMs: 5000 })
       return
@@ -569,51 +591,117 @@ function AppInner({
         return
       }
     } catch {
-      /* main will surface NO_IMAGE on upload */
+      /* main will surface NO_IMAGE */
     }
-    if (appSettings.skipPastePrompt) {
-      await runUpload({ kind: 'clipboard' }, appSettings.defaultPastePrompt)
+    const r = await window.portico.pasteImage({ sessionId: activeSessionId })
+    if (!r.ok) {
+      pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
       return
     }
-    setPromptMode({ kind: 'clipboard' })
-  }, [connState, pushStatus, appSettings, runUpload, t, activeSessionId])
+    await refreshShelf()
+    ensureShelfVisible()
+    const sl = await window.portico.shelfList(activeSessionId)
+    const stagedTotal = sl.ok
+      ? sl.value.filter((i) => i.status === 'staged').length
+      : r.value.length
+    pushStatus({
+      level: 'info',
+      message: t('status.staged', { n: r.value.length, total: stagedTotal }),
+      ttlMs: 5000
+    })
+  }, [
+    appSettings.enableImageBridge,
+    connState,
+    activeSessionId,
+    pushStatus,
+    t,
+    refreshShelf,
+    ensureShelfVisible
+  ])
 
-  const runPasteWithPrompt = useCallback(
-    async (prompt: string) => {
-      const mode = promptMode
-      setPromptMode(null)
-      if (!mode) return
-      await runUpload(mode, prompt || appSettings.defaultPastePrompt)
-    },
-    [promptMode, runUpload, appSettings.defaultPastePrompt]
-  )
-
-  const pasteImage = openPastePrompt
-
-  const beginFileUpload = useCallback(
-    async (path: string) => {
-      if (appSettings.skipPastePrompt) {
-        await runUpload({ kind: 'file', path }, appSettings.defaultPastePrompt)
+  const stageLocalFiles = useCallback(
+    async (path: string | string[]) => {
+      if (!activeSessionId) return
+      if (!appSettings.enableImageBridge) {
+        pushStatus({ level: 'warn', message: t('status.imageBridgeOff'), ttlMs: 5000 })
         return
       }
-      setPromptMode({ kind: 'file', path })
+      if (connState !== 'connected') {
+        pushStatus({ level: 'warn', message: t('status.connectFirst'), ttlMs: 4000 })
+        return
+      }
+      const r = await window.portico.uploadLocalImage({
+        sessionId: activeSessionId,
+        path
+      })
+      if (!r.ok) {
+        pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
+        return
+      }
+      await refreshShelf()
+      ensureShelfVisible()
+      const sl = await window.portico.shelfList(activeSessionId)
+      const stagedTotal = sl.ok ? sl.value.filter((i) => i.status === 'staged').length : r.value.length
+      pushStatus({
+        level: 'info',
+        message: t('status.staged', { n: r.value.length, total: stagedTotal }),
+        ttlMs: 5000
+      })
     },
-    [appSettings, runUpload]
+    [
+      activeSessionId,
+      appSettings.enableImageBridge,
+      connState,
+      pushStatus,
+      t,
+      refreshShelf,
+      ensureShelfVisible
+    ]
   )
 
+  /** Upload all staged images, inject paths, submit Enter to Claude. */
+  const commitStaged = useCallback(
+    async (prompt: string) => {
+      if (!activeSessionId) return
+      setCommitting(true)
+      try {
+        // Main also resolves single/multi stock wording; pass through for custom text.
+        const r = await window.portico.commitStaged({
+          sessionId: activeSessionId,
+          prompt,
+          inject: true,
+          submit: true
+        })
+        if (!r.ok) {
+          pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
+        } else {
+          pushStatus({
+            level: 'info',
+            message: t('status.committed', { n: r.value.length }),
+            ttlMs: 4000
+          })
+        }
+        await refreshShelf()
+      } finally {
+        setCommitting(false)
+      }
+    },
+    [activeSessionId, appSettings.defaultPastePrompt, pushStatus, t, refreshShelf]
+  )
+
+  const pasteImage = stageClipboard
+  const beginFileUpload = stageLocalFiles
+
   const uploadClipboard = useCallback(async () => {
-    if (!activeSessionId) return
-    const r = await window.portico.uploadClipboard(activeSessionId)
-    if (!r.ok) pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
-    else pushStatus({ level: 'info', message: `Uploaded to ${r.value.remotePath}`, ttlMs: 4000 })
-  }, [pushStatus, activeSessionId])
+    await stageClipboard()
+  }, [stageClipboard])
 
   const pickImageFile = useCallback(async () => {
     if (connState !== 'connected') return
     const r = await window.portico.pickImageFile()
-    if (!r.ok || !r.value) return
-    await beginFileUpload(r.value)
-  }, [connState, beginFileUpload])
+    if (!r.ok || !r.value || r.value.length === 0) return
+    await stageLocalFiles(r.value.length === 1 ? r.value[0]! : r.value)
+  }, [connState, stageLocalFiles])
 
   const repaste = useCallback(
     async (item: ShelfItem) => {
@@ -680,17 +768,20 @@ function AppInner({
       setDragOver(false)
       if (connState !== 'connected') return
       e.preventDefault()
-      const file = e.dataTransfer?.files?.[0]
-      if (!file || !file.type.startsWith('image/')) {
+      const files = [...(e.dataTransfer?.files ?? [])]
+      const imageFiles = files.filter((f) => f.type.startsWith('image/'))
+      if (imageFiles.length === 0) {
         pushStatus({ level: 'warn', message: t('drop.warnImage'), ttlMs: 3000 })
         return
       }
-      const path = (file as File & { path?: string }).path
-      if (!path) {
+      const paths = imageFiles
+        .map((f) => (f as File & { path?: string }).path)
+        .filter((p): p is string => !!p)
+      if (paths.length === 0) {
         pushStatus({ level: 'error', message: t('drop.pathError'), ttlMs: 4000 })
         return
       }
-      void beginFileUpload(path)
+      void beginFileUpload(paths.length === 1 ? paths[0]! : paths)
     }
     window.addEventListener('dragover', onDragOver)
     window.addEventListener('dragleave', onDragLeave)
@@ -849,6 +940,17 @@ function AppInner({
         run: pickImageFile
       },
       {
+        id: 'commit-staged',
+        title: t('palette.commitStaged'),
+        hint: t('palette.commitStagedHint'),
+        enabled:
+          connState === 'connected' &&
+          !!activeSessionId &&
+          shelf.some((i) => i.status === 'staged') &&
+          !committing,
+        run: () => void commitStaged(appSettings.defaultPastePrompt)
+      },
+      {
         id: 'detect-provider',
         title: t('palette.detectProvider'),
         hint: t('palette.detectProviderHint'),
@@ -976,6 +1078,9 @@ function AppInner({
       pasteImage,
       uploadClipboard,
       pickImageFile,
+      commitStaged,
+      committing,
+      shelf,
       clearRemoteCache,
       checkForUpdates,
       installUpdate,
@@ -984,6 +1089,7 @@ function AppInner({
       updateStatus?.state,
       openSettings,
       appSettings.tmuxSessionName,
+      appSettings.defaultPastePrompt,
       t,
       activeSessionId,
       createSession,
@@ -1125,13 +1231,16 @@ function AppInner({
             {appSettings.enableImageBridge ? (
               <ImageShelf
                 items={shelf}
+                defaultPrompt={appSettings.defaultPastePrompt}
                 enabled={connState === 'connected'}
+                committing={committing}
                 onRepaste={repaste}
                 onRetry={retryFailed}
                 onRemove={removeShelfItem}
                 onCopyPath={copyPath}
                 onClear={clearShelf}
                 onPickFile={pickImageFile}
+                onCommitStaged={(p) => void commitStaged(p)}
               />
             ) : null}
             {appSettings.enablePortForwards && activeSessionId ? (
@@ -1146,15 +1255,6 @@ function AppInner({
       </div>
 
       {dragOver && <div className="drop-overlay">{t('drop.overlay')}</div>}
-      <PastePromptDialog
-        open={!!promptMode}
-        title={
-          promptMode?.kind === 'file' ? t('paste.titleFile') : t('paste.titleClipboard')
-        }
-        initialPrompt={appSettings.defaultPastePrompt}
-        onCancel={() => setPromptMode(null)}
-        onConfirm={(p) => void runPasteWithPrompt(p)}
-      />
       <SettingsCenter
         open={settingsOpen}
         section={settingsSection}

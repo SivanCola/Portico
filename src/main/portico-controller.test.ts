@@ -7,7 +7,11 @@ import { EventEmitter } from 'node:events'
 vi.mock('electron', () => ({
   BrowserWindow: class {},
   clipboard: { readImage: () => ({ isEmpty: () => true }), read: () => '', writeText: () => {} },
-  nativeImage: { createFromBuffer: () => ({ isEmpty: () => true }) }
+  nativeImage: { createFromBuffer: () => ({ isEmpty: () => true }) },
+  app: {
+    getPath: (name: string) =>
+      name === 'userData' ? require('node:os').tmpdir() + '/portico-test-userdata' : '/tmp'
+  }
 }))
 
 type ConnectResult = { initialCwd: string }
@@ -59,6 +63,7 @@ vi.mock('./blob-uploader.js', () => ({
 vi.mock('./clipboard.js', () => ({
   clipboardHasImage: () => false,
   readClipboardImage: async () => null,
+  readClipboardImages: async () => [],
   readImageFile: async () => null
 }))
 

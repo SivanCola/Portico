@@ -3,6 +3,7 @@
  * Terminal appearance lives in `terminal-settings.ts`.
  * Runtime L2 flags are also pushed to main via setFeatureFlags.
  */
+import { DEFAULT_IMAGE_PROMPT_SINGLE } from '@shared/image-prompt.js'
 import type { AppLocale } from '../i18n/locales.js'
 import { isAppLocale } from '../i18n/locales.js'
 
@@ -59,16 +60,21 @@ export interface AppSettings {
    * - ask: show Local vs SSH chooser
    */
   defaultSessionKind: 'local' | 'ssh' | 'ask'
+  /**
+   * On launch, restore previous tabs and auto-reconnect SSH (key/agent) +
+   * re-attach the last tmux session for each tab.
+   */
+  restoreSessionsOnLaunch: boolean
 }
 
 export const APP_SETTINGS_KEY = 'portico.appSettings'
 /** Bump when shape changes so normalize can migrate. */
-export const APP_SETTINGS_VERSION = 7
+export const APP_SETTINGS_VERSION = 8
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   locale: 'system',
   skipPastePrompt: false,
-  defaultPastePrompt: 'Analyze this image',
+  defaultPastePrompt: DEFAULT_IMAGE_PROMPT_SINGLE,
   confirmClearCache: true,
   terminalOnly: false,
   enableImageBridge: true,
@@ -79,7 +85,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   tmuxMode: 'off',
   tmuxSessionName: 'portico',
   syncRemoteClipboard: true,
-  defaultSessionKind: 'local'
+  defaultSessionKind: 'local',
+  restoreSessionsOnLaunch: true
 }
 
 export function loadAppSettings(): AppSettings {
@@ -158,7 +165,9 @@ export function normalizeAppSettings(
       partial.defaultSessionKind === 'ask' ||
       partial.defaultSessionKind === 'local'
         ? partial.defaultSessionKind
-        : DEFAULT_APP_SETTINGS.defaultSessionKind
+        : DEFAULT_APP_SETTINGS.defaultSessionKind,
+    restoreSessionsOnLaunch:
+      partial.restoreSessionsOnLaunch ?? DEFAULT_APP_SETTINGS.restoreSessionsOnLaunch
   }
 }
 

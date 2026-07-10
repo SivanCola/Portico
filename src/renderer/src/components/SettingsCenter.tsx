@@ -205,6 +205,21 @@ export function SettingsCenter({
                   </div>
                   <em className="settings-field-hint">{t('settings.general.defaultSessionKindHint')}</em>
                 </div>
+                <label className="settings-check">
+                  <input
+                    type="checkbox"
+                    checked={appSettings.restoreSessionsOnLaunch}
+                    onChange={(e) => {
+                      const v = e.target.checked
+                      setApp('restoreSessionsOnLaunch', v)
+                      void window.portico.setRestoreOnLaunch(v)
+                    }}
+                  />
+                  <span>
+                    {t('settings.general.restoreSessions')}
+                    <em>{t('settings.general.restoreSessionsHint')}</em>
+                  </span>
+                </label>
                 {!appSettings.terminalOnly && (
                   <>
                     <div className="settings-note">{t('settings.general.l2Note')}</div>

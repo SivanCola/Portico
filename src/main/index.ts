@@ -11,6 +11,7 @@ import {
 } from '@shared/channel.js'
 import {
   IPC,
+  type CommitStagedArgs,
   type ConnectResult,
   type ConnStatePayload,
   type FeatureFlagsPayload,
@@ -331,6 +332,15 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
+// Flush session layout before quit so restore survives clean exits.
+app.on('before-quit', () => {
+  try {
+    controller?.persistNow()
+  } catch {
+    /* ignore */
+  }
+})
+
 /** Register every IPC channel against the controller. */
 function registerIpc(c: PorticoController): void {
   // Wrap handlers so any returned Result.err is logged once for diagnosis,
@@ -373,6 +383,15 @@ function registerIpc(c: PorticoController): void {
     IPC.SESSION_RENAME,
     (a) => c.renameSession(a.sessionId, a.title)
   )
+  handleArg<SessionId | null, Result<true>>(IPC.SESSION_SET_ACTIVE, (id) =>
+    c.setActiveSessionId(id)
+  )
+  handle(IPC.SESSION_RESTORE_GET, () => c.getRestoreOnLaunch())
+  handleArg<boolean, Result<boolean>>(IPC.SESSION_RESTORE_SET, (en) => c.setRestoreOnLaunch(en))
+  handle(IPC.SESSION_RESTORE_NOW, async () => {
+    await c.restoreConnections()
+    return ok(true as const)
+  })
 
   // Connection
   handleArg<{ sessionId: SessionId; target: SshTarget }, Result<ConnectResult>>(
@@ -392,13 +411,14 @@ function registerIpc(c: PorticoController): void {
     c.resize(sessionId, cols, rows)
   )
 
-  // Image bridge
-  handleArg<PasteImageArgs, Result<UploadedBlob>>(IPC.PASTE_IMAGE, (a) => c.pasteImage(a))
-  handleArg<SessionId, Result<UploadedBlob>>(IPC.UPLOAD_CLIPBOARD, (id) => c.uploadClipboard(id))
+  // Image bridge — stage then commit
+  handleArg<PasteImageArgs, Result<ShelfItem[]>>(IPC.PASTE_IMAGE, (a) => c.pasteImage(a))
+  handleArg<SessionId, Result<ShelfItem[]>>(IPC.UPLOAD_CLIPBOARD, (id) => c.uploadClipboard(id))
   handleArg<{ sessionId: SessionId; remotePath: string; prompt?: string }, Result<true>>(
     IPC.PASTE_REMOTE_PATH,
     (a) => c.pasteRemotePath(a.sessionId, a.remotePath, a.prompt)
   )
+  handleArg<CommitStagedArgs, Result<UploadedBlob[]>>(IPC.COMMIT_STAGED, (a) => c.commitStaged(a))
 
   // Provider session
   handleArg<SessionId, Result<ProviderSession>>(IPC.GET_SESSION, (id) => c.getSession(id))
@@ -415,8 +435,8 @@ function registerIpc(c: PorticoController): void {
     c.shelfRemove(a.sessionId, a.id)
   )
 
-  // Local image upload
-  handleArg<UploadLocalImageArgs, Result<UploadedBlob>>(
+  // Local image stage (single or multi path; upload on commitStaged)
+  handleArg<UploadLocalImageArgs, Result<ShelfItem[]>>(
     IPC.UPLOAD_LOCAL_IMAGE,
     (a) => c.uploadLocalImage(a)
   )
@@ -470,11 +490,11 @@ function registerIpc(c: PorticoController): void {
     return ok(result.filePaths[0] as string)
   })
 
-  // Image file picker (drag/drop alternative)
+  // Image file picker (multi-select; drag/drop alternative)
   handle(IPC.PICK_IMAGE_FILE, async () => {
     const opts = {
-      title: 'Select image',
-      properties: ['openFile' as const],
+      title: 'Select image(s)',
+      properties: ['openFile' as const, 'multiSelections' as const],
       filters: [
         { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }
       ]
@@ -483,9 +503,9 @@ function registerIpc(c: PorticoController): void {
       ? await dialog.showOpenDialog(mainWindow, opts)
       : await dialog.showOpenDialog(opts)
     if (result.canceled || result.filePaths.length === 0) {
-      return ok(null as string | null)
+      return ok(null as string[] | null)
     }
-    return ok(result.filePaths[0] as string)
+    return ok(result.filePaths as string[])
   })
 
   // SSH config alias expansion (~/.ssh/config). Both read the live config so

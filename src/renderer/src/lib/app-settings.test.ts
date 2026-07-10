@@ -74,6 +74,14 @@ describe('normalizeAppSettings', () => {
     expect(normalizeAppSettings({ defaultSessionKind: 'ssh' }).defaultSessionKind).toBe('ssh')
   })
 
+  it('defaults restoreSessionsOnLaunch to true', () => {
+    expect(DEFAULT_APP_SETTINGS.restoreSessionsOnLaunch).toBe(true)
+    expect(normalizeAppSettings({}).restoreSessionsOnLaunch).toBe(true)
+    expect(normalizeAppSettings({ restoreSessionsOnLaunch: false }).restoreSessionsOnLaunch).toBe(
+      false
+    )
+  })
+
   it('isToolSidebarVisible respects toggle and L2 features', () => {
     expect(isToolSidebarVisible(DEFAULT_APP_SETTINGS)).toBe(true)
     expect(isToolSidebarVisible({ ...DEFAULT_APP_SETTINGS, showToolSidebar: false })).toBe(false)

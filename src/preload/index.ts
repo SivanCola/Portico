@@ -30,6 +30,10 @@ const api: PorticoApi = {
     ipcRenderer.on(IPC.SESSIONS_CHANGED, h)
     return () => ipcRenderer.removeListener(IPC.SESSIONS_CHANGED, h)
   },
+  setActiveSessionId: (sessionId) => ipcRenderer.invoke(IPC.SESSION_SET_ACTIVE, sessionId),
+  getRestoreOnLaunch: () => ipcRenderer.invoke(IPC.SESSION_RESTORE_GET),
+  setRestoreOnLaunch: (enabled) => ipcRenderer.invoke(IPC.SESSION_RESTORE_SET, enabled),
+  restoreConnections: () => ipcRenderer.invoke(IPC.SESSION_RESTORE_NOW),
 
   // Lifecycle
   connect: (sessionId, target) => ipcRenderer.invoke(IPC.CONNECT, { sessionId, target }),
@@ -46,13 +50,14 @@ const api: PorticoApi = {
   },
   resize: (sessionId, cols, rows) => ipcRenderer.send(IPC.TERM_RESIZE, sessionId, cols, rows),
 
-  // Image bridge
+  // Image bridge — stage then commit
   clipboardHasImage: () => ipcRenderer.invoke(IPC.CLIPBOARD_HAS_IMAGE),
   pasteImage: (args) => ipcRenderer.invoke(IPC.PASTE_IMAGE, args),
   uploadClipboard: (sessionId) => ipcRenderer.invoke(IPC.UPLOAD_CLIPBOARD, sessionId),
   pasteRemotePath: (sessionId, remotePath, prompt) =>
     ipcRenderer.invoke(IPC.PASTE_REMOTE_PATH, { sessionId, remotePath, prompt }),
   uploadLocalImage: (args) => ipcRenderer.invoke(IPC.UPLOAD_LOCAL_IMAGE, args),
+  commitStaged: (args) => ipcRenderer.invoke(IPC.COMMIT_STAGED, args),
   pickImageFile: () => ipcRenderer.invoke(IPC.PICK_IMAGE_FILE),
   onPasteImageShortcut: (cb) => {
     const h = () => cb()

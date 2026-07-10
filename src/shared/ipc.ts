@@ -49,11 +49,15 @@ export const IPC = {
   TERM_OUTPUT: 'portico:term:output',
   TERM_RESIZE: 'portico:term:resize',
 
-  // Image bridge
+  // Image bridge (stage locally → commit on Enter)
   CLIPBOARD_HAS_IMAGE: 'portico:clipboard:hasImage',
+  /** Stage clipboard image(s) locally — no upload until commitStaged. */
   PASTE_IMAGE: 'portico:pasteImage',
+  /** Stage clipboard image(s) without inject (same as stage; kept for palette). */
   UPLOAD_CLIPBOARD: 'portico:uploadClipboard',
   PASTE_REMOTE_PATH: 'portico:pasteRemotePath',
+  /** Upload all staged images, inject paths, optionally submit (Enter) to Claude. */
+  COMMIT_STAGED: 'portico:commitStaged',
   /**
    * One-way main → renderer: fire the paste-image UI.
    * Emitted from main `before-input-event` so ⌘⇧V is not stolen by Electron's
@@ -78,7 +82,7 @@ export const IPC = {
   SHELF_REMOVE: 'portico:shelf:remove',
   SHELF_ITEM_UPDATED: 'portico:shelf:item-updated',
 
-  // Local image file upload (drag/drop or picker)
+  // Local image file stage (drag/drop or picker) — no upload until commit
   UPLOAD_LOCAL_IMAGE: 'portico:uploadLocalImage',
   PICK_IMAGE_FILE: 'portico:dialog:pickImageFile',
 
@@ -119,7 +123,13 @@ export const IPC = {
   TMUX_SET_PREFS: 'portico:tmux:setPrefs',
   TMUX_GET_PREFS: 'portico:tmux:getPrefs',
   TMUX_LIST: 'portico:tmux:list',
-  TMUX_ENTER: 'portico:tmux:enter'
+  TMUX_ENTER: 'portico:tmux:enter',
+
+  // Session layout persistence (SSH + tmux restore across launches)
+  SESSION_RESTORE_GET: 'portico:session:restoreGet',
+  SESSION_RESTORE_SET: 'portico:session:restoreSet',
+  SESSION_SET_ACTIVE: 'portico:session:setActive',
+  SESSION_RESTORE_NOW: 'portico:session:restoreNow'
 } as const
 
 /** L2 capability toggles — must never tear down the SSH PTY. */
@@ -154,12 +164,27 @@ export interface TmuxEnterArgs {
   createNew?: string
 }
 
-/** Args passed to PASTE_IMAGE. */
+/** Args passed to PASTE_IMAGE (stage clipboard; prompt ignored until commit). */
 export interface PasteImageArgs {
   sessionId: SessionId
+  /** @deprecated Staging does not use prompt; pass it to commitStaged instead. */
   prompt?: string
-  /** Override the auto-detected provider for this paste. */
+  /** Override the auto-detected provider for this paste (applied at commit if set). */
   provider?: ProviderId
+}
+
+/** Upload every staged image and inject into the remote AI. */
+export interface CommitStagedArgs {
+  sessionId: SessionId
+  prompt?: string
+  provider?: ProviderId
+  /** Inject provider path text into the terminal (default true). */
+  inject?: boolean
+  /**
+   * After inject, send Enter (CR) so interactive Claude/Codex submits the prompt.
+   * Default true when inject is true; ignored for shell.
+   */
+  submit?: boolean
 }
 
 /** Connection result payload. */
@@ -216,12 +241,14 @@ export interface PortForwardChangedPayload {
   forwards: PortForwardStatus[]
 }
 
-/** Args for uploading a local image file (path on disk). */
+/** Args for staging one or more local image files (paths on disk). */
 export interface UploadLocalImageArgs {
   sessionId: SessionId
-  path: string
+  /** Single path or multiple (Finder multi-drop / multi-pick). */
+  path: string | string[]
+  /** @deprecated Staging does not upload; use commitStaged. */
   prompt?: string
-  /** When true, inject provider prompt after upload (default true). */
+  /** @deprecated Staging never injects; use commitStaged. */
   inject?: boolean
   provider?: ProviderId
 }
@@ -247,6 +274,13 @@ export interface PorticoApi {
   listSessions(): Promise<Result<SessionSummary[]>>
   renameSession(sessionId: SessionId, title: string): Promise<Result<SessionSummary>>
   onSessionsChanged(cb: (sessions: SessionSummary[]) => void): () => void
+  /** Remember active tab for next launch. */
+  setActiveSessionId(sessionId: SessionId | null): Promise<Result<true>>
+  /** Whether launch restores saved SSH/tmux tabs. */
+  getRestoreOnLaunch(): Promise<Result<boolean>>
+  setRestoreOnLaunch(enabled: boolean): Promise<Result<boolean>>
+  /** Trigger auto-reconnect of saved sessions (once per process). */
+  restoreConnections(): Promise<Result<true>>
 
   // Lifecycle
   connect(sessionId: SessionId, target: SshTarget): Promise<Result<ConnectResult>>
@@ -260,13 +294,19 @@ export interface PorticoApi {
   onOutput(cb: (payload: TermOutputPayload) => void): () => void
   resize(sessionId: SessionId, cols: number, rows: number): void
 
-  // Image bridge
+  // Image bridge — stage locally, then commitStaged (Enter) to upload + send
   clipboardHasImage(): Promise<Result<boolean>>
-  pasteImage(args: PasteImageArgs): Promise<Result<UploadedBlob>>
-  uploadClipboard(sessionId: SessionId): Promise<Result<UploadedBlob>>
+  /** Stage clipboard image(s) locally. Does not upload until commitStaged. */
+  pasteImage(args: PasteImageArgs): Promise<Result<ShelfItem[]>>
+  /** Stage clipboard image(s) (same as pasteImage; palette label may differ). */
+  uploadClipboard(sessionId: SessionId): Promise<Result<ShelfItem[]>>
   pasteRemotePath(sessionId: SessionId, remotePath: string, prompt?: string): Promise<Result<true>>
-  uploadLocalImage(args: UploadLocalImageArgs): Promise<Result<UploadedBlob>>
-  pickImageFile(): Promise<Result<string | null>>
+  /** Stage one or more local image files. Does not upload until commitStaged. */
+  uploadLocalImage(args: UploadLocalImageArgs): Promise<Result<ShelfItem[]>>
+  /** Upload all staged images, inject path prompt, optionally submit (Enter). */
+  commitStaged(args: CommitStagedArgs): Promise<Result<UploadedBlob[]>>
+  /** Image file picker (multi-select). Returns null when cancelled. */
+  pickImageFile(): Promise<Result<string[] | null>>
   /** Main process fires this when the user hits the paste-image accelerator. */
   onPasteImageShortcut(cb: () => void): () => void
   onOpenSettings(cb: () => void): () => void

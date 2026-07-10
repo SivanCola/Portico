@@ -31,6 +31,27 @@ describe('claude adapter', () => {
     )
   })
 
+  it('lists multiple remote paths on separate lines', () => {
+    const paths = [PATH, '~/.portico/blobs/def456.png']
+    expect(claudeAdapter.formatImageReference(paths, 'Compare', interactive())).toBe(
+      'Compare:\n~/.portico/blobs/abc123.png\n~/.portico/blobs/def456.png'
+    )
+  })
+
+  it('defaults multi-image prompt wording when none is supplied', () => {
+    const paths = [PATH, '~/.portico/blobs/def456.png']
+    expect(claudeAdapter.formatImageReference(paths, undefined, interactive())).toBe(
+      'Analyze these images:\n~/.portico/blobs/abc123.png\n~/.portico/blobs/def456.png'
+    )
+  })
+
+  it('upgrades stock singular prompt to multi when many paths', () => {
+    const paths = [PATH, '~/.portico/blobs/def456.png']
+    expect(claudeAdapter.formatImageReference(paths, 'Analyze this image', interactive())).toBe(
+      'Analyze these images:\n~/.portico/blobs/abc123.png\n~/.portico/blobs/def456.png'
+    )
+  })
+
   it('does not claim native clipboard paste support', () => {
     expect(claudeAdapter.supportsNativeImagePaste(interactive())).toBe(false)
   })
@@ -40,6 +61,18 @@ describe('codex adapter', () => {
   it('uses codex -i <path> in command (non-interactive) mode', () => {
     const out = codexAdapter.formatImageReference(PATH, 'Fix the logo', interactive({ provider: 'codex', interactive: false }))
     expect(out).toBe('codex -i ~/.portico/blobs/abc123.png "Fix the logo"')
+  })
+
+  it('uses multiple -i flags for multi-image non-interactive mode', () => {
+    const paths = [PATH, '~/.portico/blobs/def456.png']
+    const out = codexAdapter.formatImageReference(
+      paths,
+      'Compare',
+      interactive({ provider: 'codex', interactive: false })
+    )
+    expect(out).toBe(
+      'codex -i ~/.portico/blobs/abc123.png -i ~/.portico/blobs/def456.png "Compare"'
+    )
   })
 
   it('escapes embedded double quotes in the prompt', () => {
@@ -54,6 +87,13 @@ describe('codex adapter', () => {
   it('uses the path-based fallback inside an interactive session', () => {
     const out = codexAdapter.formatImageReference(PATH, 'Look here', interactive({ provider: 'codex' }))
     expect(out).toBe('Look here: ~/.portico/blobs/abc123.png')
+  })
+
+  it('lists multiple paths interactively without nesting codex', () => {
+    const paths = [PATH, '~/.portico/blobs/def456.png']
+    const out = codexAdapter.formatImageReference(paths, 'Look', interactive({ provider: 'codex' }))
+    expect(out).toBe('Look:\n~/.portico/blobs/abc123.png\n~/.portico/blobs/def456.png')
+    expect(out.startsWith('codex ')).toBe(false)
   })
 
   it('does not emit a nested codex command interactively', () => {
@@ -72,6 +112,13 @@ describe('shell adapter', () => {
   it('includes the prompt as a comment header', () => {
     expect(shellAdapter.formatImageReference(PATH, 'note this', interactive())).toBe(
       `# note this\n# image: ${PATH}`
+    )
+  })
+
+  it('lists each path as a comment for multi-image', () => {
+    const paths = [PATH, '~/.portico/blobs/def456.png']
+    expect(shellAdapter.formatImageReference(paths, 'batch', interactive())).toBe(
+      `# batch\n# image: ${PATH}\n# image: ~/.portico/blobs/def456.png`
     )
   })
 })

@@ -9,6 +9,7 @@
  * `supportsNativeImagePaste`.
  */
 import { unquotedPath } from './hash.js'
+import { resolveImagePrompt } from './image-prompt.js'
 import type { ProviderId, ProviderSession } from './types.js'
 
 export interface ProviderAdapter {
@@ -16,8 +17,21 @@ export interface ProviderAdapter {
   detect(session: DetectContext): boolean
   /** Whether this provider can accept a pasted image natively (enhancement). */
   supportsNativeImagePaste(session: ProviderSession): boolean
-  /** Build the text to inject into the terminal. */
-  formatImageReference(remotePath: string, prompt: string | undefined, session: ProviderSession): string
+  /**
+   * Build the text to inject into the terminal.
+   * `remotePath` may be a single path or multiple (multi-image paste).
+   */
+  formatImageReference(
+    remotePath: string | string[],
+    prompt: string | undefined,
+    session: ProviderSession
+  ): string
+}
+
+/** Normalize one-or-many remote paths and strip shell-unsafe quoting noise. */
+function normalizePaths(remotePath: string | string[]): string[] {
+  const list = Array.isArray(remotePath) ? remotePath : [remotePath]
+  return list.map((p) => unquotedPath(p)).filter(Boolean)
 }
 
 export interface DetectContext {
@@ -73,10 +87,12 @@ export const claudeAdapter: ProviderAdapter = {
     return false
   },
   formatImageReference(remotePath, prompt) {
-    const path = unquotedPath(remotePath)
-    const text = (prompt ?? 'Analyze this image').trim()
+    const paths = normalizePaths(remotePath)
+    const multi = paths.length > 1
+    const text = resolveImagePrompt(prompt, paths.length)
     // Claude Code reads paths in prompts; keep it natural-language.
-    return `${text}: ${path}`
+    if (!multi) return `${text}: ${paths[0] ?? ''}`
+    return `${text}:\n${paths.join('\n')}`
   }
 }
 
@@ -95,12 +111,16 @@ export const codexAdapter: ProviderAdapter = {
     return session.nativePasteAvailable
   },
   formatImageReference(remotePath, prompt, session) {
-    const path = unquotedPath(remotePath)
-    const text = (prompt ?? 'Analyze this image').trim().replace(/"/g, '\\"')
+    const paths = normalizePaths(remotePath)
+    const multi = paths.length > 1
+    const text = resolveImagePrompt(prompt, paths.length).replace(/"/g, '\\"')
     if (!session.interactive) {
-      return `codex -i ${path} "${text}"`
+      // Multiple -i flags: one path per image.
+      const flags = paths.map((p) => `-i ${p}`).join(' ')
+      return `codex ${flags} "${text}"`
     }
-    return `${text}: ${path}`
+    if (!multi) return `${text}: ${paths[0] ?? ''}`
+    return `${text}:\n${paths.join('\n')}`
   }
 }
 
@@ -114,9 +134,15 @@ export const shellAdapter: ProviderAdapter = {
     return false
   },
   formatImageReference(remotePath, prompt) {
-    const path = unquotedPath(remotePath)
-    if (!prompt) return `# image uploaded to ${path}`
-    return `# ${prompt}\n# image: ${path}`
+    const paths = normalizePaths(remotePath)
+    if (paths.length === 0) return prompt ? `# ${prompt}` : '# no image path'
+    if (paths.length === 1) {
+      if (!prompt) return `# image uploaded to ${paths[0]}`
+      return `# ${prompt}\n# image: ${paths[0]}`
+    }
+    const lines = paths.map((p) => `# image: ${p}`)
+    if (!prompt) return `# images uploaded\n${lines.join('\n')}`
+    return `# ${prompt}\n${lines.join('\n')}`
   }
 }
 
@@ -194,7 +220,7 @@ export function detectProvider(ctx: DetectContext): ProviderId {
 /** Convenience wrapper used by the main process. */
 export function formatForProvider(
   provider: ProviderId,
-  remotePath: string,
+  remotePath: string | string[],
   prompt: string | undefined,
   session: ProviderSession
 ): string {

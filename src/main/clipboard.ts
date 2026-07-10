@@ -7,8 +7,8 @@
  *    they fit the upload cap; if they still exceed the cap they are rejected
  *    with a clear message.
  *
- * Also handles a *copied image file* path from the clipboard (e.g. Finder copy),
- * reading and normalizing that file instead.
+ * Also handles *copied image file(s)* from the clipboard (e.g. Finder multi-
+ * select copy), reading and normalizing those files instead.
  */
 import { clipboard, nativeImage } from 'electron'
 import { readFile } from 'node:fs/promises'
@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url'
 import {
   MAX_IMAGE_BYTES,
   MAX_IMAGE_LONG_EDGE,
+  MAX_PASTE_IMAGES,
   RECOMPRESS_JPEG_QUALITY,
   SUPPORTED_IMAGE_EXTS,
   type ImageExt
@@ -24,45 +25,88 @@ import {
 import type { NormalizedImage } from '@shared/types.js'
 
 export function clipboardHasImage(): boolean {
-  // Prefer a real bitmap; also treat a copied image *file* as present.
+  // Prefer a real bitmap; also treat copied image *file(s)* as present.
   const img = clipboard.readImage()
   if (!img.isEmpty()) return true
-  const path = filePathFromClipboard()
-  if (!path) return false
-  return isSupportedImagePath(path)
+  return filePathsFromClipboard().some(isSupportedImagePath)
 }
 
-/** Read whatever image the clipboard currently holds, or null. */
+/** Read whatever single image the clipboard currently holds, or null. */
 export async function readClipboardImage(): Promise<NormalizedImage | null> {
-  // 1) Direct bitmap (screenshot, "Copy Image" from an app).
-  const ni = clipboard.readImage()
-  if (!ni.isEmpty()) {
-    return normalizeNative(ni)
-  }
-
-  // 2) Copied image *file* (Finder/Explorer "Copy"): try the common clipboard
-  //    formats across platforms and read the referenced file from disk.
-  const path = filePathFromClipboard()
-  if (path) {
-    try {
-      const norm = await readImageFile(path)
-      if (norm) return norm
-    } catch {
-      /* not a readable image file — fall through */
-    }
-  }
-  return null
+  const imgs = await readClipboardImages()
+  return imgs[0] ?? null
 }
 
 /**
- * Best-effort detection of a copied file path from the clipboard.
- * macOS exposes `public.file-url`; Windows/Linux expose text/URI-list or a
- * bare path. Returns null when nothing usable is present.
+ * Read all images currently on the clipboard.
+ *
+ * Priority:
+ *  1. Two or more copied image files → load each file (Finder multi-select).
+ *  2. Otherwise a direct bitmap (screenshot / "Copy Image").
+ *  3. Otherwise a single copied image file.
+ */
+export async function readClipboardImages(): Promise<NormalizedImage[]> {
+  const paths = filePathsFromClipboard().filter(isSupportedImagePath)
+
+  // Multi-file copy: ignore any thumbnail bitmap and load every image file.
+  if (paths.length > 1) {
+    const limited = paths.slice(0, MAX_PASTE_IMAGES)
+    const out: NormalizedImage[] = []
+    for (const p of limited) {
+      try {
+        const norm = await readImageFile(p)
+        if (norm) out.push(norm)
+      } catch {
+        /* skip unreadable files */
+      }
+    }
+    return out
+  }
+
+  // 1) Direct bitmap (screenshot, "Copy Image" from an app).
+  const ni = clipboard.readImage()
+  if (!ni.isEmpty()) {
+    return [normalizeNative(ni)]
+  }
+
+  // 2) Single copied image *file*.
+  if (paths.length === 1) {
+    try {
+      const norm = await readImageFile(paths[0])
+      if (norm) return [norm]
+    } catch {
+      /* not a readable image file */
+    }
+  }
+  return []
+}
+
+/**
+ * Best-effort detection of a single copied file path (first image-or-any path).
+ * Prefer `filePathsFromClipboard` when multi-select matters.
  */
 export function filePathFromClipboard(): string | null {
+  return filePathsFromClipboard()[0] ?? null
+}
+
+/**
+ * All filesystem paths present on the clipboard (deduped, order preserved).
+ * Sources: macOS file-url / NSFilenames, Linux/Windows URI-list, FileName(W).
+ */
+export function filePathsFromClipboard(): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+
+  const push = (p: string | null | undefined) => {
+    if (!p) return
+    if (seen.has(p)) return
+    seen.add(p)
+    out.push(p)
+  }
+
   const tryFormats = [
-    'public.file-url', // macOS
-    'text/uri-list', // Linux / some Windows apps
+    'public.file-url', // macOS (often first file only)
+    'text/uri-list', // Linux / some Windows apps / multi-line
     'FileNameW', // Windows
     'FileName' // Windows (ANSI / short path)
   ]
@@ -76,11 +120,91 @@ export function filePathFromClipboard(): string | null {
       // Skip URI-list comments.
       .filter((s) => !s.startsWith('#'))
     for (const c of candidates) {
-      const resolved = resolveCandidate(c)
-      if (resolved) return resolved
+      push(resolveCandidate(c))
     }
   }
-  return null
+
+  // macOS multi-file pasteboard: often a binary or XML property list of paths.
+  for (const p of pathsFromNsFilenames()) {
+    push(p)
+  }
+
+  return out
+}
+
+/**
+ * Parse NSFilenamesPboardType (XML or binary-ish buffer) for absolute paths.
+ * Best-effort; no external plist dependency.
+ */
+function pathsFromNsFilenames(): string[] {
+  const found: string[] = []
+
+  // Text form (XML plist) when Electron can decode it.
+  const asText = readClipboardTextFormat('NSFilenamesPboardType')
+  if (asText) {
+    found.push(...extractPathsFromPlistText(asText))
+  }
+
+  // Binary buffer form (common on modern macOS).
+  try {
+    const buf = clipboard.readBuffer('NSFilenamesPboardType')
+    if (buf && buf.byteLength > 0) {
+      const text = buf.toString('utf8')
+      // XML plist embedded in buffer
+      if (text.includes('<plist') || text.includes('<string>')) {
+        found.push(...extractPathsFromPlistText(text))
+      } else {
+        found.push(...extractAbsolutePathsFromBinary(buf))
+      }
+    }
+  } catch {
+    /* format unsupported */
+  }
+
+  return found
+}
+
+/** Pull `<string>/abs/path</string>` entries from an XML plist. */
+export function extractPathsFromPlistText(text: string): string[] {
+  const out: string[] = []
+  const re = /<string>([^<]+)<\/string>/gi
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text)) !== null) {
+    const raw = m[1].trim()
+    // Unescape minimal XML entities.
+    const decoded = raw
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+    const resolved = resolveCandidate(decoded) ?? (decoded.startsWith('/') ? decoded : null)
+    if (resolved) out.push(resolved)
+  }
+  return out
+}
+
+/**
+ * Scan a binary plist-ish buffer for absolute path strings that look like
+ * filesystem paths (macOS NSFilenames). Conservative regex; may miss odd paths.
+ */
+export function extractAbsolutePathsFromBinary(buf: Buffer): string[] {
+  const text = buf.toString('utf8')
+  const out: string[] = []
+  const seen = new Set<string>()
+  // Absolute Unix paths; stop at C0 controls / high controls used as separators.
+  const re = /(\/(?:[^\x00-\x1f]+)+)/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text)) !== null) {
+    const candidate = m[1].replace(/\0+$/, '').trim()
+    if (!candidate || seen.has(candidate)) continue
+    // Skip obvious non-paths (plist type tags etc.)
+    if (candidate.length < 2) continue
+    if (!candidate.includes('/')) continue
+    seen.add(candidate)
+    out.push(candidate)
+  }
+  return out
 }
 
 /** Read a clipboard text format portably; returns '' when unsupported. */
