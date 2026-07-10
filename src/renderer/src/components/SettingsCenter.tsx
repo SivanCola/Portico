@@ -183,6 +183,28 @@ export function SettingsCenter({
                     <em>{t('settings.general.confirmCacheHint')}</em>
                   </span>
                 </label>
+                <div className="settings-field">
+                  <span className="settings-field-label">{t('settings.general.defaultSessionKind')}</span>
+                  <div className="locale-pills">
+                    {(
+                      [
+                        ['local', 'settings.general.kindLocal'],
+                        ['ssh', 'settings.general.kindSsh'],
+                        ['ask', 'settings.general.kindAsk']
+                      ] as const
+                    ).map(([value, labelKey]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        className={appSettings.defaultSessionKind === value ? 'active' : ''}
+                        onClick={() => setApp('defaultSessionKind', value)}
+                      >
+                        {t(labelKey)}
+                      </button>
+                    ))}
+                  </div>
+                  <em className="settings-field-hint">{t('settings.general.defaultSessionKindHint')}</em>
+                </div>
                 {!appSettings.terminalOnly && (
                   <>
                     <div className="settings-note">{t('settings.general.l2Note')}</div>
@@ -201,6 +223,17 @@ export function SettingsCenter({
                         onChange={(e) => setApp('enablePortForwards', e.target.checked)}
                       />
                       <span>{t('settings.general.portForwards')}</span>
+                    </label>
+                    <label className="settings-check">
+                      <input
+                        type="checkbox"
+                        checked={appSettings.showToolSidebar}
+                        onChange={(e) => setApp('showToolSidebar', e.target.checked)}
+                      />
+                      <span>
+                        {t('settings.general.showToolSidebar')}
+                        <em>{t('settings.general.showToolSidebarHint')}</em>
+                      </span>
                     </label>
                     <label className="settings-check">
                       <input

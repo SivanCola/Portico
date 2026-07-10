@@ -40,6 +40,7 @@ export const IPC = {
 
   // Connection lifecycle (scoped)
   CONNECT: 'portico:connect',
+  CONNECT_LOCAL: 'portico:connectLocal',
   DISCONNECT: 'portico:disconnect',
   IS_CONNECTED: 'portico:isConnected',
 
@@ -249,6 +250,8 @@ export interface PorticoApi {
 
   // Lifecycle
   connect(sessionId: SessionId, target: SshTarget): Promise<Result<ConnectResult>>
+  /** Spawn a local interactive shell ($SHELL) for this session tab. */
+  connectLocal(sessionId: SessionId): Promise<Result<ConnectResult>>
   disconnect(sessionId: SessionId): Promise<Result<true>>
   isConnected(sessionId: SessionId): Promise<Result<boolean>>
 

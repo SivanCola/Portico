@@ -33,6 +33,7 @@ const api: PorticoApi = {
 
   // Lifecycle
   connect: (sessionId, target) => ipcRenderer.invoke(IPC.CONNECT, { sessionId, target }),
+  connectLocal: (sessionId) => ipcRenderer.invoke(IPC.CONNECT_LOCAL, sessionId),
   disconnect: (sessionId) => ipcRenderer.invoke(IPC.DISCONNECT, sessionId),
   isConnected: (sessionId) => ipcRenderer.invoke(IPC.IS_CONNECTED, sessionId),
 

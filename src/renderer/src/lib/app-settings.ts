@@ -27,6 +27,12 @@ export interface AppSettings {
   enableImageBridge: boolean
   /** Local port forwards (ignored when terminalOnly). */
   enablePortForwards: boolean
+  /**
+   * Show the right tool sidebar (image shelf + port forwards).
+   * When false, terminal uses full width; paste/upload still work via shortcuts.
+   * Also forced off when both image bridge and port forwards are disabled.
+   */
+  showToolSidebar: boolean
   /** Auto-detect Claude/Codex from output (ignored when terminalOnly). */
   enableProviderDetect: boolean
   /** Auto-update checks (main UpdateService). */
@@ -46,11 +52,18 @@ export interface AppSettings {
    * - on connect, try `tmux set-option -g set-clipboard on` (no conf edit)
    */
   syncRemoteClipboard: boolean
+  /**
+   * Default backend when opening a new / cold-start session:
+   * - local: spawn $SHELL immediately
+   * - ssh: show SSH form
+   * - ask: show Local vs SSH chooser
+   */
+  defaultSessionKind: 'local' | 'ssh' | 'ask'
 }
 
 export const APP_SETTINGS_KEY = 'portico.appSettings'
 /** Bump when shape changes so normalize can migrate. */
-export const APP_SETTINGS_VERSION = 5
+export const APP_SETTINGS_VERSION = 7
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   locale: 'system',
@@ -60,11 +73,13 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   terminalOnly: false,
   enableImageBridge: true,
   enablePortForwards: true,
+  showToolSidebar: true,
   enableProviderDetect: true,
   enableAutoUpdate: true,
   tmuxMode: 'off',
   tmuxSessionName: 'portico',
-  syncRemoteClipboard: true
+  syncRemoteClipboard: true,
+  defaultSessionKind: 'local'
 }
 
 export function loadAppSettings(): AppSettings {
@@ -131,13 +146,28 @@ export function normalizeAppSettings(
     terminalOnly,
     enableImageBridge,
     enablePortForwards,
+    showToolSidebar: partial.showToolSidebar ?? DEFAULT_APP_SETTINGS.showToolSidebar,
     enableProviderDetect,
     enableAutoUpdate: partial.enableAutoUpdate ?? DEFAULT_APP_SETTINGS.enableAutoUpdate,
     tmuxMode,
     tmuxSessionName,
     syncRemoteClipboard:
-      partial.syncRemoteClipboard ?? DEFAULT_APP_SETTINGS.syncRemoteClipboard
+      partial.syncRemoteClipboard ?? DEFAULT_APP_SETTINGS.syncRemoteClipboard,
+    defaultSessionKind:
+      partial.defaultSessionKind === 'ssh' ||
+      partial.defaultSessionKind === 'ask' ||
+      partial.defaultSessionKind === 'local'
+        ? partial.defaultSessionKind
+        : DEFAULT_APP_SETTINGS.defaultSessionKind
   }
+}
+
+/** Whether the right tool column should occupy layout space. */
+export function isToolSidebarVisible(s: AppSettings): boolean {
+  const n = normalizeAppSettings(s)
+  if (!n.showToolSidebar) return false
+  // Nothing useful to show when both L2 panels are off.
+  return n.enableImageBridge || n.enablePortForwards
 }
 
 function sanitizeTmuxName(raw: string): string {

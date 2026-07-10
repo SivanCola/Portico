@@ -74,6 +74,26 @@ vi.mock('./port-forwarder.js', () => ({
   }
 }))
 
+vi.mock('./local-session.js', () => {
+  const { EventEmitter } = require('node:events')
+  return {
+    LocalSession: class extends EventEmitter {
+      connect = vi.fn(async () => {
+        this.emit('ready')
+        return { shell: '/bin/zsh', cwd: '/home/u' }
+      })
+      disconnect = vi.fn(async () => {
+        this.emit('close', { intentional: true })
+      })
+      isConnected = () => true
+      write = vi.fn()
+      resize = vi.fn()
+      shellName = () => 'zsh'
+      recentOutput = () => []
+    }
+  }
+})
+
 const { PorticoController } = await import('./portico-controller.js')
 
 const sampleTarget = (host = 'example.com') => ({
@@ -147,6 +167,17 @@ describe('PorticoController shelf', () => {
     const r = await c.connect('nope', sampleTarget())
     expect(r.ok).toBe(false)
     if (!r.ok) expect(r.error.code).toBe('NOT_FOUND')
+  })
+
+  it('connectLocal opens a local session', async () => {
+    const r = await c.connectLocal(sessionId)
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(r.value.connected).toBe(true)
+      expect(r.value.sessionId).toBe(sessionId)
+    }
+    const list = c.listSessions()
+    expect(list.ok && list.value[0]?.kind).toBe('local')
   })
 })
 
@@ -228,6 +259,19 @@ describe('PorticoController multi-session', () => {
     inst.emit('data', 'hello-from-a')
 
     expect(chunks.some((c) => c.sessionId === id1 && c.data === 'hello-from-a')).toBe(true)
+  })
+
+  it('applies dimensions received before the initial SSH connection is ready', async () => {
+    const list = c.listSessions()
+    expect(list.ok).toBe(true)
+    if (!list.ok) return
+    const id = list.value[0].id
+
+    c.resize(id, 132, 41)
+    expect((await c.connect(id, sampleTarget())).ok).toBe(true)
+
+    const inst = mockState.instances[mockState.instances.length - 1]
+    expect(inst.resize).toHaveBeenCalledWith({ cols: 132, rows: 41 })
   })
 
   it('closeSession recreates a draft when last session closed', async () => {

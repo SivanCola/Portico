@@ -14,6 +14,9 @@ export type MessageKey =
   | 'topbar.reconnecting'
   | 'topbar.commandPalette'
   | 'topbar.settings'
+  | 'topbar.toggleToolSidebar'
+  | 'topbar.hideSidebar'
+  | 'topbar.showSidebar'
   | 'toolbar.pasteImage'
   | 'toolbar.orFileDropFind'
   | 'toolbar.terminalOnlyFind'
@@ -24,10 +27,17 @@ export type MessageKey =
   | 'reconnect.pasteDisabled'
   | 'reconnect.cancel'
   | 'sidebar.imageOff'
+  | 'sidebar.enableFeaturesFirst'
+  | 'status.dismissHint'
+  | 'palette.hideToolSidebar'
+  | 'palette.showToolSidebar'
+  | 'palette.toggleToolSidebarHint'
   | 'rail.title'
   | 'rail.new'
   | 'rail.close'
   | 'rail.renamePrompt'
+  | 'rail.renameHint'
+  | 'rail.dragHint'
   | 'rail.unread'
   | 'palette.newSession'
   | 'palette.newSessionHint'
@@ -36,6 +46,19 @@ export type MessageKey =
   | 'drop.warnImage'
   | 'drop.pathError'
   | 'connect.title'
+  | 'connect.hubTitle'
+  | 'connect.hubSubtitle'
+  | 'connect.localTitle'
+  | 'connect.localDesc'
+  | 'connect.sshTitle'
+  | 'connect.sshDesc'
+  | 'connect.localStarting'
+  | 'connect.backToChooser'
+  | 'settings.general.defaultSessionKind'
+  | 'settings.general.defaultSessionKindHint'
+  | 'settings.general.kindLocal'
+  | 'settings.general.kindSsh'
+  | 'settings.general.kindAsk'
   | 'connect.host'
   | 'connect.hostPlaceholder'
   | 'connect.user'
@@ -73,6 +96,8 @@ export type MessageKey =
   | 'settings.general.l2Note'
   | 'settings.general.imageBridge'
   | 'settings.general.portForwards'
+  | 'settings.general.showToolSidebar'
+  | 'settings.general.showToolSidebarHint'
   | 'settings.general.providerDetect'
   | 'settings.general.language'
   | 'settings.general.languageHint'
@@ -188,6 +213,9 @@ const en: Catalog = {
   'topbar.reconnecting': 'Reconnecting...',
   'topbar.commandPalette': 'Command palette  ·  ⌘⇧P',
   'topbar.settings': 'Settings  ·  ⌘,',
+  'topbar.toggleToolSidebar': 'Toggle tool sidebar  ·  ⌘\\',
+  'topbar.hideSidebar': 'Hide panel',
+  'topbar.showSidebar': 'Show panel',
   'toolbar.pasteImage': 'Paste image',
   'toolbar.orFileDropFind': 'or File… / drop · ⌘F find',
   'toolbar.terminalOnlyFind': 'Terminal only · ⌘F find',
@@ -198,10 +226,17 @@ const en: Catalog = {
   'reconnect.pasteDisabled': 'Paste image disabled until reconnected.',
   'reconnect.cancel': 'Cancel',
   'sidebar.imageOff': 'Image shelf off',
+  'sidebar.enableFeaturesFirst': 'Enable Image bridge or Port forwards in Settings first.',
+  'status.dismissHint': 'Click to dismiss',
+  'palette.hideToolSidebar': 'Hide tool sidebar',
+  'palette.showToolSidebar': 'Show tool sidebar',
+  'palette.toggleToolSidebarHint': 'Image shelf & port forwards  ·  ⌘\\',
   'rail.title': 'Sessions',
   'rail.new': 'New session',
   'rail.close': 'Close session',
   'rail.renamePrompt': 'Session title',
+  'rail.renameHint': 'Double-click to rename',
+  'rail.dragHint': 'Drag to reorder',
   'rail.unread': 'Unread output',
   'palette.newSession': 'New session',
   'palette.newSessionHint': 'Open a draft connection tab',
@@ -210,6 +245,20 @@ const en: Catalog = {
   'drop.warnImage': 'Drop an image file.',
   'drop.pathError': 'Could not resolve dropped file path.',
   'connect.title': 'Connect to a host',
+  'connect.hubTitle': 'Open a session',
+  'connect.hubSubtitle': 'Use a local shell on this Mac, or SSH into a remote host.',
+  'connect.localTitle': 'Local shell',
+  'connect.localDesc': 'Open $SHELL here (zsh / bash). Good for local agents.',
+  'connect.sshTitle': 'SSH host',
+  'connect.sshDesc': 'Connect with password, key, or agent — image bridge to remote.',
+  'connect.localStarting': 'Starting local shell…',
+  'connect.backToChooser': 'Back',
+  'settings.general.defaultSessionKind': 'Default new session',
+  'settings.general.defaultSessionKindHint':
+    'Cold start only: Local opens a shell immediately; SSH / Ask show the connect screen. “+” always shows the chooser.',
+  'settings.general.kindLocal': 'Local shell',
+  'settings.general.kindSsh': 'SSH form',
+  'settings.general.kindAsk': 'Ask each time',
   'connect.host': 'Host',
   'connect.hostPlaceholder': 'hostname or SSH alias',
   'connect.user': 'User',
@@ -249,6 +298,9 @@ const en: Catalog = {
   'settings.general.l2Note': 'Optional L2 capabilities (safe to disable):',
   'settings.general.imageBridge': 'Image paste / upload bridge',
   'settings.general.portForwards': 'Port forwarding',
+  'settings.general.showToolSidebar': 'Show right tool sidebar',
+  'settings.general.showToolSidebarHint':
+    'Image shelf and port forwards panel. Hide for a wider terminal (⌘\\).',
   'settings.general.providerDetect': 'Auto-detect Claude / Codex from output',
   'settings.general.language': 'Language',
   'settings.general.languageHint': 'UI language for menus and dialogs',
@@ -375,6 +427,9 @@ const zhCN: Catalog = {
   'topbar.reconnecting': '重连中…',
   'topbar.commandPalette': '命令面板  ·  ⌘⇧P',
   'topbar.settings': '设置  ·  ⌘,',
+  'topbar.toggleToolSidebar': '切换右侧工具栏  ·  ⌘\\',
+  'topbar.hideSidebar': '隐藏面板',
+  'topbar.showSidebar': '显示面板',
   'toolbar.pasteImage': '粘贴图片',
   'toolbar.orFileDropFind': '或 文件… / 拖放 · ⌘F 查找',
   'toolbar.terminalOnlyFind': '仅终端 · ⌘F 查找',
@@ -385,10 +440,17 @@ const zhCN: Catalog = {
   'reconnect.pasteDisabled': '重连完成前无法粘贴图片。',
   'reconnect.cancel': '取消',
   'sidebar.imageOff': '图片货架已关闭',
+  'sidebar.enableFeaturesFirst': '请先在设置中启用图片桥或端口转发。',
+  'status.dismissHint': '点击关闭',
+  'palette.hideToolSidebar': '隐藏右侧工具栏',
+  'palette.showToolSidebar': '显示右侧工具栏',
+  'palette.toggleToolSidebarHint': '图片货架与端口转发  ·  ⌘\\',
   'rail.title': '会话',
   'rail.new': '新建会话',
   'rail.close': '关闭会话',
   'rail.renamePrompt': '会话标题',
+  'rail.renameHint': '双击重命名',
+  'rail.dragHint': '拖拽调整顺序',
   'rail.unread': '有新输出',
   'palette.newSession': '新建会话',
   'palette.newSessionHint': '打开一个待连接的会话标签',
@@ -397,6 +459,20 @@ const zhCN: Catalog = {
   'drop.warnImage': '请拖放图片文件。',
   'drop.pathError': '无法解析拖放文件的路径。',
   'connect.title': '连接到主机',
+  'connect.hubTitle': '打开会话',
+  'connect.hubSubtitle': '使用本机 Shell，或通过 SSH 连接远端主机。',
+  'connect.localTitle': '本机 Shell',
+  'connect.localDesc': '在本机打开 $SHELL（zsh / bash），适合本地 Agent。',
+  'connect.sshTitle': 'SSH 主机',
+  'connect.sshDesc': '密码 / 私钥 / agent 连接远端，支持图片桥。',
+  'connect.localStarting': '正在启动本机 Shell…',
+  'connect.backToChooser': '返回',
+  'settings.general.defaultSessionKind': '新建会话默认',
+  'settings.general.defaultSessionKindHint':
+    '仅影响冷启动：本机=直接开 Shell；SSH/询问=显示连接页。点「+」始终弹出本机/SSH 选择。',
+  'settings.general.kindLocal': '本机 Shell',
+  'settings.general.kindSsh': 'SSH 表单',
+  'settings.general.kindAsk': '每次询问',
   'connect.host': '主机',
   'connect.hostPlaceholder': '主机名或 SSH 别名',
   'connect.user': '用户',
@@ -436,6 +512,9 @@ const zhCN: Catalog = {
   'settings.general.l2Note': '可选 L2 能力（可安全关闭）：',
   'settings.general.imageBridge': '图片粘贴 / 上传桥接',
   'settings.general.portForwards': '端口转发',
+  'settings.general.showToolSidebar': '显示右侧工具栏',
+  'settings.general.showToolSidebarHint':
+    '图片货架与端口转发面板。隐藏后终端更宽（⌘\\）。',
   'settings.general.providerDetect': '从输出自动检测 Claude / Codex',
   'settings.general.language': '界面语言',
   'settings.general.languageHint': '菜单与对话框的显示语言',

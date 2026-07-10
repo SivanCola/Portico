@@ -120,23 +120,30 @@ export interface ShelfItem {
   sourcePath?: string
 }
 
-/** Runtime id for one Portico SSH tab/session (not SshTarget.id). */
+/** Runtime id for one Portico tab/session (not SshTarget.id). */
 export type SessionId = string
+
+/** How the session is backed: local PTY vs SSH. */
+export type SessionKind = 'local' | 'ssh'
 
 /** Connection lifecycle state. */
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting'
 
-/** Sidebar / list row for one local SSH session. */
+/** Sidebar / list row for one Portico session. */
 export interface SessionSummary {
   id: SessionId
-  /** Display title (editable); default alias or user@host. */
+  /** Display title (editable); default alias, user@host, or local shell name. */
   title: string
+  /** Backend kind; omitted/undefined on pure drafts before first connect. */
+  kind?: SessionKind
   target?: {
     user: string
     host: string
     port: number
     alias?: string
   }
+  /** Local shell path basename when kind === 'local'. */
+  shell?: string
   state: ConnectionState
   phase?: ConnectPhase
   provider: ProviderId

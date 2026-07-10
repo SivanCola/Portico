@@ -28,3 +28,16 @@ export const MAX_IMAGE_LONG_EDGE = 2560
 /** Image formats we accept as canonical blob extensions. */
 export const SUPPORTED_IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp'] as const
 export type ImageExt = (typeof SUPPORTED_IMAGE_EXTS)[number]
+
+/**
+ * Host→client sequences that clear sticky xterm modes left by Claude/tmux/etc.
+ * Injected on disconnect / reconnect so mouse tracking does not keep dumping
+ * SGR reports (e.g. `35;2;16M…`) into the new PTY as keyboard input.
+ */
+export const XTERM_MODE_SOFT_RESET =
+  // Mouse tracking (X10 / VT200 / any-event / UTF-8 / SGR / urxvt)
+  '\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1005l\x1b[?1006l\x1b[?1015l' +
+  // Bracketed paste
+  '\x1b[?2004l' +
+  // Normal cursor keys, show cursor, leave alt screen, enable autowrap
+  '\x1b[?1l\x1b[?25h\x1b[?1049l\x1b[?7h'

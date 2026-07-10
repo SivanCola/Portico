@@ -21,11 +21,12 @@ import type {
   UpdateStatus
 } from '@shared/types.js'
 import type { ConnStatePayload, StatusPayload } from '@shared/ipc.js'
-import { ConnectionForm } from './components/ConnectionForm.js'
+import { SessionConnectHub } from './components/SessionConnectHub.js'
 import { Terminal } from './components/Terminal.js'
 import { ImageShelf } from './components/ImageShelf.js'
 import { PortForwards } from './components/PortForwards.js'
 import { SessionRail } from './components/SessionRail.js'
+import { GearIcon, PanelIcon } from './components/icons.js'
 import { CommandPalette, type PaletteAction } from './components/CommandPalette.js'
 import { PastePromptDialog } from './components/PastePromptDialog.js'
 import { SettingsCenter, type SettingsSection } from './components/SettingsCenter.js'
@@ -38,11 +39,34 @@ import {
   loadAppSettings,
   saveAppSettings,
   normalizeAppSettings,
+  isToolSidebarVisible,
   toFeatureFlags,
   toTmuxPrefs,
   type AppSettings
 } from './lib/app-settings.js'
+import {
+  applySessionOrder,
+  loadSessionOrder,
+  moveSessionId,
+  saveSessionOrder
+} from './lib/session-order.js'
 import { I18nProvider, useI18n } from './i18n/index.js'
+
+/** Merge main summaries into UI list, preserving drag order + unread flags. */
+function mergeSessionList(
+  prev: SessionSummary[],
+  incoming: SessionSummary[]
+): SessionSummary[] {
+  const unreadMap = new Map(prev.map((s) => [s.id, s.unread]))
+  const withUnread = incoming.map((s) => ({
+    ...s,
+    unread: unreadMap.get(s.id) ?? false
+  }))
+  const order = prev.length > 0 ? prev.map((s) => s.id) : loadSessionOrder()
+  const ordered = applySessionOrder(withUnread, order)
+  saveSessionOrder(ordered.map((s) => s.id))
+  return ordered
+}
 
 type ConnInfo = { user: string; host: string; alias?: string } | null
 type PromptMode = { kind: 'clipboard' } | { kind: 'file'; path: string } | null
@@ -181,13 +205,42 @@ function AppInner({
   const isActive =
     connState === 'connected' || connState === 'connecting' || connState === 'reconnecting'
 
+  const toolSidebarOpen = isToolSidebarVisible(appSettings)
+
   const pushStatus = useCallback((s: StatusPayload) => {
+    const ttl =
+      s.ttlMs != null && s.ttlMs > 0
+        ? s.ttlMs
+        : s.level === 'info'
+          ? 3500
+          : s.level === 'warn'
+            ? 6000
+            : 0
     setStatus(s)
     if (statusTimer.current) clearTimeout(statusTimer.current)
-    if (s.ttlMs && s.ttlMs > 0) {
-      statusTimer.current = setTimeout(() => setStatus(null), s.ttlMs)
+    if (ttl > 0) {
+      statusTimer.current = setTimeout(() => setStatus(null), ttl)
     }
   }, [])
+
+  const dismissStatus = useCallback(() => {
+    if (statusTimer.current) clearTimeout(statusTimer.current)
+    setStatus(null)
+  }, [])
+
+  const toggleToolSidebar = useCallback(() => {
+    // If L2 panels are both off, open settings rather than a no-op toggle.
+    if (!appSettings.enableImageBridge && !appSettings.enablePortForwards) {
+      openSettings('general')
+      pushStatus({
+        level: 'info',
+        message: t('sidebar.enableFeaturesFirst'),
+        ttlMs: 4000
+      })
+      return
+    }
+    updateAppSettings({ ...appSettings, showToolSidebar: !appSettings.showToolSidebar })
+  }, [appSettings, updateAppSettings, openSettings, pushStatus, t])
 
   useEffect(() => window.portico.onStatus(pushStatus), [pushStatus])
 
@@ -204,26 +257,54 @@ function AppInner({
 
   // ---- bootstrap session list --------------------------------------------
   useEffect(() => {
-    void window.portico.listSessions().then((r) => {
+    void window.portico.listSessions().then(async (r) => {
       if (!r.ok || r.value.length === 0) return
-      setSessionList(r.value.map((s) => ({ ...s, unread: false })))
-      setActiveSessionId((cur) => cur ?? r.value[0].id)
+      const merged = mergeSessionList([], r.value.map((s) => ({ ...s, unread: false })))
+      setSessionList(merged)
+      const firstId = merged[0]?.id ?? null
+      setActiveSessionId((cur) => cur ?? firstId)
       setById((prev) => {
         const next = { ...prev }
         for (const s of r.value) {
-          if (!next[s.id]) next[s.id] = emptyUi({ connState: s.state, provider: { provider: s.provider, interactive: true, nativePasteAvailable: false } })
+          if (!next[s.id])
+            next[s.id] = emptyUi({
+              connState: s.state,
+              provider: {
+                provider: s.provider,
+                interactive: true,
+                nativePasteAvailable: false
+              }
+            })
         }
         return next
       })
+      // Cold start: open local shell when preference is local and only a draft exists.
+      const pref = loadAppSettings().defaultSessionKind
+      const draft = merged[0]
+      if (
+        pref === 'local' &&
+        draft &&
+        draft.state === 'disconnected' &&
+        !draft.kind &&
+        merged.length === 1
+      ) {
+        const lr = await window.portico.connectLocal(draft.id)
+        if (lr.ok) {
+          patchUi(draft.id, {
+            connState: 'connected',
+            everLive: true,
+            connInfo: { user: '', host: 'localhost', alias: 'local' }
+          })
+        }
+      }
     })
+    // patchUi is stable enough; avoid re-running on every render
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
     return window.portico.onSessionsChanged((sessions) => {
-      setSessionList((prev) => {
-        const unreadMap = new Map(prev.map((s) => [s.id, s.unread]))
-        return sessions.map((s) => ({ ...s, unread: unreadMap.get(s.id) ?? false }))
-      })
+      setSessionList((prev) => mergeSessionList(prev, sessions))
       setById((prev) => {
         const next = { ...prev }
         for (const s of sessions) {
@@ -237,7 +318,9 @@ function AppInner({
       })
       setActiveSessionId((cur) => {
         if (cur && sessions.some((s) => s.id === cur)) return cur
-        return sessions[0]?.id ?? null
+        // Prefer first in saved UI order, not main's default order.
+        const ordered = applySessionOrder(sessions, loadSessionOrder())
+        return ordered[0]?.id ?? null
       })
     })
   }, [])
@@ -280,16 +363,31 @@ function AppInner({
         }
         return next
       })
-      // Refresh list titles/state from main
+      // Refresh list titles/state from main (keep drag order)
       void window.portico.listSessions().then((r) => {
         if (!r.ok) return
-        setSessionList((prev) => {
-          const unreadMap = new Map(prev.map((s) => [s.id, s.unread]))
-          return r.value.map((s) => ({ ...s, unread: unreadMap.get(s.id) ?? false }))
-        })
+        setSessionList((prev) => mergeSessionList(prev, r.value))
       })
     })
   }, [patchUi])
+
+  const reorderSessions = useCallback(
+    (fromId: SessionId, toId: SessionId, position: 'before' | 'after') => {
+      setSessionList((prev) => {
+        const prevIds = prev.map((s) => s.id)
+        const ids = moveSessionId(prevIds, fromId, toId, position)
+        if (ids.length !== prevIds.length || ids.every((id, i) => id === prevIds[i])) {
+          return prev
+        }
+        const map = new Map(prev.map((s) => [s.id, s]))
+        const next = ids.map((id) => map.get(id)).filter((s): s is SessionSummary => !!s)
+        if (next.length !== prev.length) return prev
+        saveSessionOrder(next.map((s) => s.id))
+        return next
+      })
+    },
+    []
+  )
 
   // Mark unread on background terminal output
   useEffect(() => {
@@ -335,6 +433,43 @@ function AppInner({
   }, [patchUi])
 
   // ---- session actions ---------------------------------------------------
+  const connect = useCallback(
+    async (target: SshTarget): Promise<string | null> => {
+      if (!activeSessionId) return 'No active session'
+      const r = await window.portico.connect(activeSessionId, target)
+      if (!r.ok) return r.error.message
+      patchUi(activeSessionId, {
+        connInfo: { user: target.user, host: target.host, alias: target.alias },
+        everLive: true
+      })
+      const sl = await window.portico.shelfList(activeSessionId)
+      if (sl.ok) patchUi(activeSessionId, { shelf: sl.value })
+      const pr = await window.portico.getSession(activeSessionId)
+      if (pr.ok) patchUi(activeSessionId, { provider: pr.value })
+      return null
+    },
+    [activeSessionId, patchUi]
+  )
+
+  const connectLocal = useCallback(
+    async (sessionId?: SessionId): Promise<string | null> => {
+      const id = sessionId ?? activeSessionId
+      if (!id) return 'No active session'
+      const r = await window.portico.connectLocal(id)
+      if (!r.ok) return r.error.message
+      patchUi(id, {
+        connInfo: { user: '', host: 'localhost', alias: 'local' },
+        everLive: true,
+        connState: 'connected'
+      })
+      const pr = await window.portico.getSession(id)
+      if (pr.ok) patchUi(id, { provider: pr.value })
+      return null
+    },
+    [activeSessionId, patchUi]
+  )
+
+  /** Always open a draft tab and show the Local / SSH chooser (never auto-connect). */
   const createSession = useCallback(async () => {
     const r = await window.portico.createSession()
     if (!r.ok) {
@@ -342,6 +477,7 @@ function AppInner({
       return
     }
     selectSession(r.value.id)
+    // Do not auto-connectLocal here — user expects the connect hub so they can pick SSH.
   }, [pushStatus, selectSession])
 
   const closeSession = useCallback(
@@ -360,24 +496,6 @@ function AppInner({
       if (!r.ok) pushStatus({ level: 'warn', message: r.error.message, ttlMs: 4000 })
     },
     [pushStatus]
-  )
-
-  const connect = useCallback(
-    async (target: SshTarget): Promise<string | null> => {
-      if (!activeSessionId) return 'No active session'
-      const r = await window.portico.connect(activeSessionId, target)
-      if (!r.ok) return r.error.message
-      patchUi(activeSessionId, {
-        connInfo: { user: target.user, host: target.host, alias: target.alias },
-        everLive: true
-      })
-      const sl = await window.portico.shelfList(activeSessionId)
-      if (sl.ok) patchUi(activeSessionId, { shelf: sl.value })
-      const pr = await window.portico.getSession(activeSessionId)
-      if (pr.ok) patchUi(activeSessionId, { provider: pr.value })
-      return null
-    },
-    [activeSessionId, patchUi]
   )
 
   const disconnect = useCallback(async () => {
@@ -632,7 +750,7 @@ function AppInner({
     [sessionList, activeSessionId, selectSession]
   )
 
-  // Shortcuts: ⌘, settings · ⌘⇧P palette · ⌘⇧V paste · ⌘⇧[ / ] session switch
+  // Shortcuts: ⌘, settings · ⌘⇧P palette · ⌘⇧V paste · ⌘\ tool sidebar · ⌘⇧[ / ] session
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const meta = e.metaKey || e.ctrlKey
@@ -642,10 +760,16 @@ function AppInner({
       const isComma = e.code === 'Comma' || e.key === ','
       const isBracketLeft = e.code === 'BracketLeft' || e.key === '['
       const isBracketRight = e.code === 'BracketRight' || e.key === ']'
+      const isBackslash = e.code === 'Backslash' || e.key === '\\'
 
       if (!e.shiftKey && isComma) {
         e.preventDefault()
         openSettings(settingsOpen ? settingsSection : 'general')
+        return
+      }
+      if (!e.shiftKey && isBackslash) {
+        e.preventDefault()
+        toggleToolSidebar()
         return
       }
       if (e.shiftKey && isP) {
@@ -664,7 +788,14 @@ function AppInner({
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [pasteImage, openSettings, settingsOpen, settingsSection, switchSessionByOffset])
+  }, [
+    pasteImage,
+    openSettings,
+    settingsOpen,
+    settingsSection,
+    switchSessionByOffset,
+    toggleToolSidebar
+  ])
 
   useEffect(() => {
     return window.portico.onPasteImageShortcut(() => {
@@ -688,6 +819,13 @@ function AppInner({
         hint: t('palette.newSessionHint'),
         enabled: true,
         run: () => void createSession()
+      },
+      {
+        id: 'toggle-tool-sidebar',
+        title: toolSidebarOpen ? t('palette.hideToolSidebar') : t('palette.showToolSidebar'),
+        hint: t('palette.toggleToolSidebarHint'),
+        enabled: true,
+        run: toggleToolSidebar
       },
       {
         id: 'paste-image',
@@ -850,7 +988,9 @@ function AppInner({
       activeSessionId,
       createSession,
       sessionList,
-      selectSession
+      selectSession,
+      toolSidebarOpen,
+      toggleToolSidebar
     ]
   )
 
@@ -887,10 +1027,11 @@ function AppInner({
         onProvider={setProvider}
         onDisconnect={disconnect}
         onOpenPalette={() => setPaletteOpen(true)}
-        onOpenSettings={() => openSettings('general')}
+        onToggleToolSidebar={toggleToolSidebar}
+        toolSidebarOpen={toolSidebarOpen}
         appInfo={appInfo}
       />
-      <div className="workspace">
+      <div className={`workspace ${toolSidebarOpen ? '' : 'tool-sidebar-collapsed'}`.trim()}>
         <SessionRail
           sessions={sessionList}
           activeId={activeSessionId}
@@ -898,10 +1039,19 @@ function AppInner({
           onCreate={() => void createSession()}
           onClose={(id) => void closeSession(id)}
           onRename={(id, title) => void renameSession(id, title)}
+          onReorder={reorderSessions}
+          onOpenSettings={() => openSettings('general')}
         />
         <div className="terminal-pane">
           {/* Form for draft / connecting first time — keep Terminals mounted underneath. */}
-          {showForm && <ConnectionForm onConnect={connect} phase={connectPhase} />}
+          {showForm && (
+            <SessionConnectHub
+              onConnectSsh={connect}
+              onConnectLocal={() => connectLocal()}
+              phase={connectPhase}
+              preferSsh={appSettings.defaultSessionKind === 'ssh'}
+            />
+          )}
           {!showForm && connState === 'reconnecting' && reconnectInfo && (
             <div className="reconnect-banner">
               <span>
@@ -946,12 +1096,13 @@ function AppInner({
               </span>
               <button
                 type="button"
-                className="btn ghost"
-                style={{ fontSize: 12, padding: '2px 10px' }}
+                className="btn ghost icon-btn"
+                style={{ fontSize: 12, padding: '2px 8px' }}
                 onClick={() => openSettings('terminal')}
-                title={t('topbar.settings')}
+                title={t('palette.terminalSettingsHint')}
+                aria-label={t('palette.terminalSettings')}
               >
-                {t('common.settings')}
+                <GearIcon size={14} />
               </button>
             </div>
           )}
@@ -962,40 +1113,36 @@ function AppInner({
                 key={id}
                 sessionId={id}
                 active={!showForm && id === activeSessionId}
+                connState={byId[id]?.connState ?? 'disconnected'}
                 settings={termSettings}
                 onPasteImage={() => void pasteImage()}
               />
             ))}
           </div>
         </div>
-        <div className="sidebar">
-          {appSettings.enableImageBridge ? (
-            <ImageShelf
-              items={shelf}
-              enabled={connState === 'connected'}
-              onRepaste={repaste}
-              onRetry={retryFailed}
-              onRemove={removeShelfItem}
-              onCopyPath={copyPath}
-              onClear={clearShelf}
-              onPickFile={pickImageFile}
-            />
-          ) : (
-            <div className="sidebar-disabled-note">
-              {t('sidebar.imageOff')}
-              <button type="button" className="btn ghost" onClick={() => openSettings('general')}>
-                {t('common.settings')}
-              </button>
-            </div>
-          )}
-          {appSettings.enablePortForwards && activeSessionId ? (
-            <PortForwards
-              sessionId={activeSessionId}
-              forwards={portForwards}
-              enabled={connState === 'connected'}
-            />
-          ) : null}
-        </div>
+        {toolSidebarOpen && (
+          <div className="sidebar">
+            {appSettings.enableImageBridge ? (
+              <ImageShelf
+                items={shelf}
+                enabled={connState === 'connected'}
+                onRepaste={repaste}
+                onRetry={retryFailed}
+                onRemove={removeShelfItem}
+                onCopyPath={copyPath}
+                onClear={clearShelf}
+                onPickFile={pickImageFile}
+              />
+            ) : null}
+            {appSettings.enablePortForwards && activeSessionId ? (
+              <PortForwards
+                sessionId={activeSessionId}
+                forwards={portForwards}
+                enabled={connState === 'connected'}
+              />
+            ) : null}
+          </div>
+        )}
       </div>
 
       {dragOver && <div className="drop-overlay">{t('drop.overlay')}</div>}
@@ -1026,7 +1173,27 @@ function AppInner({
         onInstallUpdate={() => void installUpdate()}
       />
       {updateStatus && <UpdateBanner status={updateStatus} onInstall={installUpdate} />}
-      {status && <div className={`status-banner ${status.level}`}>{status.message}</div>}
+      {status && (
+        <div
+          className={`status-banner ${status.level}`}
+          role="status"
+          onClick={dismissStatus}
+          title={t('status.dismissHint')}
+        >
+          <span className="status-banner-text">{status.message}</span>
+          <button
+            type="button"
+            className="status-banner-close"
+            aria-label={t('common.cancel')}
+            onClick={(e) => {
+              e.stopPropagation()
+              dismissStatus()
+            }}
+          >
+            ×
+          </button>
+        </div>
+      )}
       <CommandPalette open={paletteOpen} actions={actions} onClose={closePalette} />
     </div>
   )
@@ -1039,7 +1206,8 @@ interface TopBarProps {
   onProvider: (p: ProviderId) => void
   onDisconnect: () => void
   onOpenPalette: () => void
-  onOpenSettings: () => void
+  onToggleToolSidebar: () => void
+  toolSidebarOpen: boolean
   appInfo: AppInfo | null
 }
 
@@ -1050,7 +1218,8 @@ function TopBar({
   onProvider,
   onDisconnect,
   onOpenPalette,
-  onOpenSettings,
+  onToggleToolSidebar,
+  toolSidebarOpen,
   appInfo
 }: TopBarProps) {
   const { t } = useI18n()
@@ -1066,15 +1235,17 @@ function TopBar({
   const isActive =
     connState === 'connected' || connState === 'connecting' || connState === 'reconnecting'
   const isBeta = appInfo?.releaseChannel === 'beta'
-  const displayName = appInfo?.name ?? 'Portico'
+  // Brand is always "Portico"; channel is shown only via the beta badge
+  // (avoids "Portico Beta" + yellow Beta being redundant).
+  const displayName = 'Portico'
 
   return (
     <header className="topbar">
       <div className="brand">
         <span className={`dot ${dotClass}`} />
-        {displayName}
+        <span className="brand-name">{displayName}</span>
         {isBeta && (
-          <span className="beta-badge" title="Beta">
+          <span className="beta-badge" title={appInfo?.name ?? 'Portico Beta'}>
             Beta
           </span>
         )}
@@ -1088,31 +1259,57 @@ function TopBar({
         )}
       </div>
       {connInfo && (
-        <span className="conn">
-          {connInfo.user}@{connInfo.alias ?? connInfo.host}
+        <span className="conn" title={
+          !connInfo.user || connInfo.host === 'localhost'
+            ? connInfo.alias ?? 'local'
+            : `${connInfo.user}@${connInfo.alias ?? connInfo.host}`
+        }>
+          {!connInfo.user || connInfo.host === 'localhost'
+            ? connInfo.alias ?? 'local'
+            : `${connInfo.user}@${connInfo.alias ?? connInfo.host}`}
         </span>
       )}
       <div className="spacer" />
-      {isActive && (
-        <div className="provider-pills" title={t('toolbar.provider')}>
-          {(['claude', 'codex', 'shell'] as ProviderId[]).map((p) => (
-            <button key={p} className={provider === p ? 'active' : ''} onClick={() => onProvider(p)}>
-              {p}
-            </button>
-          ))}
-        </div>
-      )}
-      <button className="btn ghost" onClick={onOpenSettings} title={t('topbar.settings')}>
-        {t('common.settings')}
-      </button>
-      <button className="btn ghost" onClick={onOpenPalette} title={t('topbar.commandPalette')}>
-        ⌘⇧P
-      </button>
-      {isActive && (
-        <button className="btn danger" onClick={onDisconnect}>
-          {t('common.disconnect')}
+      <div className="actions">
+        {isActive && (
+          <div className="provider-pills" title={t('toolbar.provider')}>
+            {(['claude', 'codex', 'shell'] as ProviderId[]).map((p) => (
+              <button
+                key={p}
+                type="button"
+                className={provider === p ? 'active' : ''}
+                onClick={() => onProvider(p)}
+              >
+                {p}
+              </button>
+            ))}
+          </div>
+        )}
+        <button
+          type="button"
+          className={`btn ghost icon-btn ${toolSidebarOpen ? 'active-toggle' : ''}`}
+          onClick={onToggleToolSidebar}
+          title={t('topbar.toggleToolSidebar')}
+          aria-label={toolSidebarOpen ? t('topbar.hideSidebar') : t('topbar.showSidebar')}
+          aria-pressed={toolSidebarOpen}
+        >
+          <PanelIcon open={toolSidebarOpen} />
         </button>
-      )}
+        <button
+          type="button"
+          className="btn ghost icon-btn"
+          onClick={onOpenPalette}
+          title={t('topbar.commandPalette')}
+          aria-label={t('topbar.commandPalette')}
+        >
+          <span className="topbar-kbd">⌘⇧P</span>
+        </button>
+        {isActive && (
+          <button type="button" className="btn ghost danger" onClick={onDisconnect}>
+            {t('common.disconnect')}
+          </button>
+        )}
+      </div>
     </header>
   )
 }

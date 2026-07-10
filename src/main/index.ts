@@ -205,6 +205,11 @@ function installAppMenu(): void {
 }
 
 function createWindow(): BrowserWindow {
+  // Dev / Linux / Windows window chrome. macOS Dock uses the .icns from the
+  // packaged app bundle (see electron-builder `mac.icon`).
+  const iconPath = join(__dirname, '../../build/icon.png')
+  const isMac = process.platform === 'darwin'
+  const isWin = process.platform === 'win32'
   const win = new BrowserWindow({
     width: 1200,
     height: 780,
@@ -212,12 +217,34 @@ function createWindow(): BrowserWindow {
     minHeight: 560,
     backgroundColor: '#0e1116',
     title: appName(),
+    show: false,
+    // Embed system controls into the in-app top bar (less “browser chrome”).
+    ...(isMac
+      ? {
+          titleBarStyle: 'hiddenInset' as const,
+          trafficLightPosition: { x: 14, y: 12 }
+        }
+      : isWin
+        ? {
+            icon: iconPath,
+            titleBarStyle: 'hidden' as const,
+            titleBarOverlay: {
+              color: '#0e1116',
+              symbolColor: '#e6edf3',
+              height: 40
+            }
+          }
+        : { icon: iconPath }),
     webPreferences: {
       preload: join(__dirname, '../preload/index.mjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false
     }
+  })
+
+  win.once('ready-to-show', () => {
+    if (!win.isDestroyed()) win.show()
   })
 
   // Open external links in the system browser, never inside the app.
@@ -352,6 +379,7 @@ function registerIpc(c: PorticoController): void {
     IPC.CONNECT,
     (a) => c.connect(a.sessionId, a.target)
   )
+  handleArg<SessionId, Result<ConnectResult>>(IPC.CONNECT_LOCAL, (id) => c.connectLocal(id))
   handleArg<SessionId, Result<true>>(IPC.DISCONNECT, (id) => c.disconnect(id))
   handleArg<SessionId, Result<boolean>>(IPC.IS_CONNECTED, (id) => c.isConnected(id))
   handle(IPC.CLIPBOARD_HAS_IMAGE, () => c.clipboardHasImage())

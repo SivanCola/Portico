@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   DEFAULT_APP_SETTINGS,
+  isToolSidebarVisible,
   normalizeAppSettings,
   toFeatureFlags
 } from './app-settings.js'
@@ -58,5 +59,46 @@ describe('normalizeAppSettings', () => {
     expect(DEFAULT_APP_SETTINGS.syncRemoteClipboard).toBe(true)
     expect(normalizeAppSettings({}).syncRemoteClipboard).toBe(true)
     expect(normalizeAppSettings({ syncRemoteClipboard: false }).syncRemoteClipboard).toBe(false)
+  })
+
+  it('defaults showToolSidebar to true', () => {
+    expect(DEFAULT_APP_SETTINGS.showToolSidebar).toBe(true)
+    expect(normalizeAppSettings({}).showToolSidebar).toBe(true)
+    expect(normalizeAppSettings({ showToolSidebar: false }).showToolSidebar).toBe(false)
+  })
+
+  it('defaults defaultSessionKind to local', () => {
+    expect(DEFAULT_APP_SETTINGS.defaultSessionKind).toBe('local')
+    expect(normalizeAppSettings({}).defaultSessionKind).toBe('local')
+    expect(normalizeAppSettings({ defaultSessionKind: 'ask' }).defaultSessionKind).toBe('ask')
+    expect(normalizeAppSettings({ defaultSessionKind: 'ssh' }).defaultSessionKind).toBe('ssh')
+  })
+
+  it('isToolSidebarVisible respects toggle and L2 features', () => {
+    expect(isToolSidebarVisible(DEFAULT_APP_SETTINGS)).toBe(true)
+    expect(isToolSidebarVisible({ ...DEFAULT_APP_SETTINGS, showToolSidebar: false })).toBe(false)
+    expect(
+      isToolSidebarVisible({
+        ...DEFAULT_APP_SETTINGS,
+        showToolSidebar: true,
+        enableImageBridge: false,
+        enablePortForwards: false
+      })
+    ).toBe(false)
+    expect(
+      isToolSidebarVisible({
+        ...DEFAULT_APP_SETTINGS,
+        showToolSidebar: true,
+        enableImageBridge: false,
+        enablePortForwards: true
+      })
+    ).toBe(true)
+    expect(
+      isToolSidebarVisible({
+        ...DEFAULT_APP_SETTINGS,
+        terminalOnly: true,
+        showToolSidebar: true
+      })
+    ).toBe(false)
   })
 })

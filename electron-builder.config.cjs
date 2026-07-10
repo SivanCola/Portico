@@ -43,10 +43,15 @@ const UPDATE_CHANNEL = {
 const config = {
   appId: APP_ID[CHANNEL],
   productName: PRODUCT_NAME[CHANNEL],
+  // build/icon.png + build/icon.icns — Portico gateway mark
   directories: {
-    output: `dist/${CHANNEL}`
+    output: `dist/${CHANNEL}`,
+    buildResources: 'build'
   },
+  icon: 'build/icon.png',
   files: ['out/**/*', '!node_modules/**/*'],
+  // node-pty native bindings must load from disk, not asar
+  asarUnpack: ['**/node_modules/node-pty/**/*'],
   // Always emit per-channel updater metadata (latest.yml / beta.yml) and the
   // blockmap files so the auto-updater has everything it needs on both channels.
   generateUpdatesFilesForAllChannels: true,
@@ -57,6 +62,7 @@ const config = {
     channel: UPDATE_CHANNEL[CHANNEL]
   },
   mac: {
+    icon: 'build/icon.icns',
     target: [
       { target: 'dmg', arch: ['x64', 'arm64'] },
       { target: 'zip', arch: ['x64', 'arm64'] }
@@ -64,9 +70,11 @@ const config = {
     category: 'public.app-category.developer-tools'
   },
   win: {
+    icon: 'build/icon.png',
     target: [{ target: 'nsis', arch: ['x64'] }]
   },
   linux: {
+    icon: 'build/icon.png',
     target: [
       { target: 'AppImage', arch: ['x64'] },
       { target: 'deb', arch: ['x64'] }

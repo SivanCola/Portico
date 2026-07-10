@@ -27,25 +27,47 @@ export interface DetectContext {
   currentLine: string
   /** Process name if known, e.g. "claude", "codex", "bash". */
   processName?: string
+  /**
+   * When set (from local process tree), preferred over banner heuristics.
+   * 'shell' means no AI child was found under the PTY.
+   */
+  processHint?: ProviderId | 'none'
 }
 
-const joined = (ctx: DetectContext): string =>
-  [...ctx.recentOutput.slice(-40), ctx.currentLine].join('\n')
+const joined = (lines: string[]): string => lines.join('\n')
 
-/** Strong Claude Code signals — avoid locking on a casual "claude" mention. */
+/** Strong Claude Code entry banners. */
 const CLAUDE_STRONG =
   /claude\s*code|welcome to claude|anthropic.*claude|\bclaude\b.*\bv?\d+\.\d+/i
 
-/** Strong Codex signals. */
+/** Strong Codex entry banners. */
 const CODEX_STRONG =
   /openai\s*codex|welcome to codex|\bcodex\b.*\bv?\d+\.\d+|codex\s*cli/i
+
+/**
+ * UI / runtime hints that Claude is *still* the foreground app
+ * (status lines, menus, permissions banner). Keep conservative — broad
+ * matches prevent "back to shell" detection.
+ */
+const CLAUDE_ACTIVE =
+  /claude\s*code|bypass permissions|\/btw\b|\/compact\b|╭─|╰─|anthropic\.com/i
+
+const CODEX_ACTIVE = /openai\s*codex|codex\s*cli|\bcodex>\b/i
+
+/** Looks like a normal shell prompt at the end of recent output. */
+const SHELL_PROMPT =
+  /(?:^|\n)(?:\S+@\S+(?::[^\n#\$]*)?\s*[#\$]\s*|[%❯›➜]\s+|\$\s+)$/m
+
+/** Explicit exit / goodbye noise from AI CLIs. */
+const AI_EXIT =
+  /(?:^|\n)\s*(?:goodbye|bye[!.,]?|exiting|session ended)\b/i
 
 /** Claude Code: banner / process name / strong versioned mention. */
 export const claudeAdapter: ProviderAdapter = {
   id: 'claude',
   detect(ctx) {
     if (ctx.processName === 'claude') return true
-    return CLAUDE_STRONG.test(joined(ctx))
+    return CLAUDE_STRONG.test(joined([...ctx.recentOutput.slice(-40), ctx.currentLine]))
   },
   supportsNativeImagePaste() {
     return false
@@ -67,7 +89,7 @@ export const codexAdapter: ProviderAdapter = {
   id: 'codex',
   detect(ctx) {
     if (ctx.processName === 'codex') return true
-    return CODEX_STRONG.test(joined(ctx))
+    return CODEX_STRONG.test(joined([...ctx.recentOutput.slice(-40), ctx.currentLine]))
   },
   supportsNativeImagePaste(session) {
     return session.nativePasteAvailable
@@ -104,11 +126,68 @@ export const ADAPTERS: Record<ProviderId, ProviderAdapter> = {
   shell: shellAdapter
 }
 
-/** Run detection across adapters in priority order; returns first match. */
+/**
+ * Detect active provider from process tree (if available) + terminal output.
+ *
+ * Priority:
+ *  1. Local process tree hint (most reliable on local PTY)
+ *  2. Shell prompt / exit at the *tail* → shell (exit Claude/Codex)
+ *  3. Active AI UI chrome in the last few lines
+ *  4. Strong entry banners still “near” the tail
+ *  5. Default shell
+ */
 export function detectProvider(ctx: DetectContext): ProviderId {
-  for (const id of ['claude', 'codex'] as const) {
-    if (ADAPTERS[id].detect(ctx)) return id
+  // 1) Live process under local PTY — authoritative when present
+  if (ctx.processHint === 'claude' || ctx.processHint === 'codex') {
+    return ctx.processHint
   }
+  if (ctx.processHint === 'none') {
+    // AI child gone; do not keep sticky banner from scrollback
+    return 'shell'
+  }
+
+  if (ctx.processName === 'claude') return 'claude'
+  if (ctx.processName === 'codex') return 'codex'
+
+  const recent = joined(ctx.recentOutput.slice(-12).concat(ctx.currentLine ? [ctx.currentLine] : []))
+  const tail = joined(ctx.recentOutput.slice(-4).concat(ctx.currentLine ? [ctx.currentLine] : []))
+  const lastLine = (ctx.currentLine || ctx.recentOutput[ctx.recentOutput.length - 1] || '').trim()
+
+  // 2) Back at a shell prompt (or explicit exit) — prefer shell unless the
+  //    last line itself is still an AI banner/UI line.
+  const tailIsShell = SHELL_PROMPT.test(tail) || AI_EXIT.test(tail)
+  const lastIsAi =
+    CLAUDE_STRONG.test(lastLine) ||
+    CODEX_STRONG.test(lastLine) ||
+    CLAUDE_ACTIVE.test(lastLine) ||
+    CODEX_ACTIVE.test(lastLine)
+
+  if (tailIsShell && !lastIsAi) {
+    return 'shell'
+  }
+
+  // 3) Still-active UI in recent lines
+  if (CLAUDE_ACTIVE.test(recent) || CLAUDE_STRONG.test(recent)) {
+    if (CODEX_ACTIVE.test(recent) || CODEX_STRONG.test(recent)) {
+      const claudeIdx = Math.max(
+        recent.toLowerCase().lastIndexOf('claude'),
+        recent.indexOf('╭')
+      )
+      const codexIdx = Math.max(
+        recent.toLowerCase().lastIndexOf('codex'),
+        recent.toLowerCase().lastIndexOf('openai')
+      )
+      return codexIdx > claudeIdx ? 'codex' : 'claude'
+    }
+    return 'claude'
+  }
+  if (CODEX_ACTIVE.test(recent) || CODEX_STRONG.test(recent)) return 'codex'
+
+  // 4) Older banners further up the buffer (entry without process probe)
+  const window = joined(ctx.recentOutput.slice(-40).concat(ctx.currentLine ? [ctx.currentLine] : []))
+  if (CLAUDE_STRONG.test(window)) return 'claude'
+  if (CODEX_STRONG.test(window)) return 'codex'
+
   return 'shell'
 }
 

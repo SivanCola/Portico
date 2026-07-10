@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Portico app mark (vector source).
+  Metaphor: classical portico / gateway + remote terminal prompt.
+  Brand colors match the renderer: bg #0e1116, accent #4493f8, ok #3fb950.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#12161d"/>
+      <stop offset="1" stop-color="#0a0d12"/>
+    </linearGradient>
+    <linearGradient id="arch" x1="280" y1="220" x2="740" y2="780" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#5aa6ff"/>
+      <stop offset="1" stop-color="#2f7de0"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="18" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <clipPath id="squircle">
+      <!-- Approximate macOS continuous corner -->
+      <rect x="0" y="0" width="1024" height="1024" rx="228" ry="228"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#squircle)">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+    <!-- soft vignette -->
+    <rect width="1024" height="1024" fill="url(#bg)" opacity="0.3"/>
+
+    <!-- Portico arch (simplified classical gateway) -->
+    <g filter="url(#glow)">
+      <!-- lintel -->
+      <rect x="268" y="248" width="488" height="72" rx="28" fill="url(#arch)"/>
+      <!-- left column -->
+      <rect x="286" y="300" width="88" height="420" rx="28" fill="url(#arch)"/>
+      <rect x="274" y="700" width="112" height="56" rx="24" fill="url(#arch)"/>
+      <!-- right column -->
+      <rect x="650" y="300" width="88" height="420" rx="28" fill="url(#arch)"/>
+      <rect x="638" y="700" width="112" height="56" rx="24" fill="url(#arch)"/>
+      <!-- arch ring -->
+      <path
+        d="M374 430
+           C374 320, 430 268, 512 268
+           C594 268, 650 320, 650 430
+           L650 520
+           C650 430, 594 378, 512 378
+           C430 378, 374 430, 374 520
+           Z"
+        fill="url(#arch)"
+        opacity="0.95"
+      />
+      <!-- arch opening (cut) -->
+      <path
+        d="M414 450
+           C414 360, 454 320, 512 320
+           C570 320, 610 360, 610 450
+           L610 520
+           L414 520
+           Z"
+        fill="#0a0d12"
+      />
+    </g>
+
+    <!-- Terminal screen -->
+    <rect x="430" y="400" width="164" height="140" rx="22" fill="#0c1016" stroke="#2a313c" stroke-width="6"/>
+    <!-- grid hint -->
+    <path d="M430 470 H594 M512 400 V540" stroke="#1c2330" stroke-width="2"/>
+    <!-- prompt -->
+    <text x="458" y="472" font-family="ui-monospace, SF Mono, Menlo, monospace" font-size="42" font-weight="600" fill="#3fb950">&gt;_</text>
+  </g>
+</svg>

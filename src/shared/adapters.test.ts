@@ -97,13 +97,52 @@ describe('detectProvider', () => {
     ).toBe('shell')
   })
 
-  it('prefers claude over codex when both strong banners appear', () => {
+  it('prefers the more recent banner when both appear', () => {
     expect(
       detectProvider({
         recentOutput: ['Welcome to Claude Code v1.2.3', 'OpenAI Codex v0.1.0'],
         currentLine: ''
       })
+    ).toBe('codex')
+    expect(
+      detectProvider({
+        recentOutput: ['OpenAI Codex v0.1.0', 'Welcome to Claude Code v1.2.3'],
+        currentLine: ''
+      })
     ).toBe('claude')
+  })
+
+  it('returns shell after shell prompt when AI UI is gone', () => {
+    expect(
+      detectProvider({
+        recentOutput: [
+          'Welcome to Claude Code v1.2.3',
+          'some work',
+          'ubuntu@host:~$ '
+        ],
+        currentLine: ''
+      })
+    ).toBe('shell')
+  })
+
+  it('uses processHint claude over shell-looking output', () => {
+    expect(
+      detectProvider({
+        recentOutput: ['ubuntu@host:~$ '],
+        currentLine: '',
+        processHint: 'claude'
+      })
+    ).toBe('claude')
+  })
+
+  it('processHint none forces shell even if old banner remains', () => {
+    expect(
+      detectProvider({
+        recentOutput: ['Welcome to Claude Code v1.2.3', 'ubuntu@host:~$ '],
+        currentLine: '',
+        processHint: 'none'
+      })
+    ).toBe('shell')
   })
 })
 

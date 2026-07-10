@@ -9,6 +9,9 @@
  *
  * Because names are content-addressed, re-uploading the same image is a no-op.
  */
+import { mkdir, writeFile, access } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
 import {
   MAX_IMAGE_BYTES,
   PORTICO_REMOTE_DIR,
@@ -69,6 +72,50 @@ export async function uploadBlob(
     bytes: img.data.byteLength
   }
   return { blob, transferred }
+}
+
+/**
+ * Content-addressed write under the local home blob dir (for local PTY sessions).
+ * `remotePath` is an absolute filesystem path for provider inject.
+ */
+export async function saveLocalBlob(img: NormalizedImage): Promise<UploadResult> {
+  if (img.data.byteLength > MAX_IMAGE_BYTES) {
+    throw Object.assign(
+      new Error(
+        `Image is ${(img.data.byteLength / 1024 / 1024).toFixed(1)} MiB; limit is ${(
+          MAX_IMAGE_BYTES /
+          1024 /
+          1024
+        ).toFixed(0)} MiB.`
+      ),
+      { code: 'IMAGE_TOO_LARGE' }
+    )
+  }
+  const hash = sha256Hex(img.data)
+  const tildePath = blobPath(PORTICO_REMOTE_DIR, hash, img.ext)
+  const absPath = tildePath.startsWith('~/')
+    ? join(homedir(), tildePath.slice(2))
+    : tildePath.startsWith('~')
+      ? join(homedir(), tildePath.slice(1))
+      : tildePath
+  await mkdir(dirname(absPath), { recursive: true })
+  let transferred = false
+  try {
+    await access(absPath)
+  } catch {
+    await writeFile(absPath, img.data)
+    transferred = true
+    log.info('upload', 'wrote local blob', { hash, bytes: img.data.byteLength, path: absPath })
+  }
+  return {
+    blob: {
+      remotePath: absPath,
+      hash,
+      ext: img.ext as ImageExt,
+      bytes: img.data.byteLength
+    },
+    transferred
+  }
 }
 
 /** Stat a remote path via SFTP; resolves false on any "not found" failure. */

@@ -1,6 +1,6 @@
 import { BrowserWindow, clipboard } from 'electron'
 import { randomUUID } from 'node:crypto'
-import { PORTICO_REMOTE_DIR } from '@shared/constants.js'
+import { PORTICO_REMOTE_DIR, XTERM_MODE_SOFT_RESET } from '@shared/constants.js'
 import { detectProvider, formatForProvider } from '@shared/adapters.js'
 import type { PorticoApi } from '@shared/ipc.js'
 import { ok, err } from '@shared/result.js'
@@ -22,14 +22,16 @@ import type {
   ProviderSession,
   Result,
   SessionId,
+  SessionKind,
   SessionSummary,
   ShelfItem,
   SshTarget,
   UploadedBlob
 } from '@shared/types.js'
 import { SshSession } from './ssh-session.js'
+import { LocalSession } from './local-session.js'
 import { PortForwarder } from './port-forwarder.js'
-import { uploadBlob } from './blob-uploader.js'
+import { saveLocalBlob, uploadBlob } from './blob-uploader.js'
 import { clipboardHasImage, readClipboardImage, readImageFile } from './clipboard.js'
 import { getLogger, redactTarget } from './logger.js'
 import {
@@ -47,6 +49,7 @@ import {
   type TmuxSessionInfo
 } from './tmux.js'
 import { Osc52Filter } from './osc52.js'
+import { findAiChildProcess } from './provider-process.js'
 
 const MAX_RECONNECT_ATTEMPTS = 10
 const MAX_SESSIONS = 8
@@ -87,18 +90,22 @@ interface HandleHost {
 }
 
 /**
- * One Portico SSH tab: own PTY, reconnect loop, shelf, port forwards, OSC52.
+ * One Portico tab: local PTY or SSH, reconnect (SSH only), shelf, PF, OSC52.
  */
 class SessionHandle {
   readonly id: SessionId
   readonly createdAt: string
   title: string
+  private kind: SessionKind | null = null
 
   private ssh: SshSession | null = null
+  private local: LocalSession | null = null
   private target: SshTarget | null = null
+  private localShell = ''
   private provider: ProviderId = 'shell'
   private interactive = true
-  private providerLocked = false
+  /** True only after the user manually picks Claude/Codex/Shell in the UI. */
+  private providerManual = false
   private shelf: ShelfItem[] = []
   private connState: ConnectionState = 'disconnected'
   private lastDims: { cols: number; rows: number } | null = null
@@ -113,6 +120,10 @@ class SessionHandle {
   private reconnectInFlight = false
   private osc52 = new Osc52Filter()
   private lastPhase: ConnStatePayload['phase'] | undefined
+  /** Throttle auto provider detection on the hot PTY path. */
+  private lastProviderDetectAt = 0
+  private lastProcessProbeAt = 0
+  private cachedProcessHint: 'claude' | 'codex' | 'none' | undefined
 
   constructor(
     id: SessionId,
@@ -128,6 +139,7 @@ class SessionHandle {
     return {
       id: this.id,
       title: this.title,
+      kind: this.kind ?? undefined,
       target: this.target
         ? {
             user: this.target.user,
@@ -136,6 +148,7 @@ class SessionHandle {
             alias: this.target.alias
           }
         : undefined,
+      shell: this.kind === 'local' ? this.localShell || undefined : undefined,
       state: this.connState,
       phase: this.lastPhase,
       provider: this.provider,
@@ -150,18 +163,113 @@ class SessionHandle {
     host?: string
     alias?: string
     sessionId: SessionId
+    kind?: SessionKind
   }> {
     return ok({
       sessionId: this.id,
       state: this.connState,
+      kind: this.kind ?? undefined,
       user: this.target?.user,
-      host: this.target?.host,
-      alias: this.target?.alias
+      host: this.kind === 'local' ? 'localhost' : this.target?.host,
+      alias: this.kind === 'local' ? this.localShell || 'local' : this.target?.alias
     })
   }
 
   isConnected(): Result<boolean> {
-    return ok(!!this.ssh?.isConnected())
+    return ok(!!(this.ssh?.isConnected() || this.local?.isConnected()))
+  }
+
+  private async teardownBackends(): Promise<void> {
+    try {
+      await this.local?.disconnect()
+    } catch {
+      /* ignore */
+    }
+    this.local = null
+    try {
+      await this.ssh?.disconnect()
+    } catch {
+      /* ignore */
+    }
+    this.ssh = null
+    this.portForwarder?.destroyAll()
+    this.portForwarder = null
+  }
+
+  async connectLocal(): Promise<Result<ConnectResult>> {
+    if (this.connectInFlight) {
+      return err('BUSY', 'A connection attempt is already in progress for this session.')
+    }
+    this.reconnectCancelled = true
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = null
+    }
+    this.connectInFlight = true
+    const epoch = ++this.lifecycleEpoch
+    this.closeHandled = true
+    await this.teardownBackends()
+    this.closeHandled = false
+    this.target = null
+
+    let session: LocalSession | null = null
+    try {
+      log.info('controller', 'local connect attempt', { sessionId: this.id })
+      this.setConnState('connecting', { phase: 'shell' })
+      session = new LocalSession()
+      this.attachLocalListeners(session)
+      const info = await session.connect({
+        cols: this.lastDims?.cols,
+        rows: this.lastDims?.rows
+      })
+      if (epoch !== this.lifecycleEpoch) {
+        this.closeHandled = true
+        try {
+          await session.disconnect()
+        } catch {
+          /* ignore */
+        }
+        return err('CANCELLED', 'Connection superseded by a newer action.')
+      }
+      this.local = session
+      this.kind = 'local'
+      this.localShell = session.shellName()
+      this.title = this.localShell || 'Local'
+      this.closeHandled = false
+      this.osc52.reset()
+      this.interactive = true
+      this.provider = 'shell'
+      this.providerManual = false
+      this.cachedProcessHint = undefined
+      this.setConnState('connected', { phase: 'ready' })
+      this.pushProviderSession()
+      this.host.onSummaryChanged()
+      log.info('controller', 'local connected', {
+        sessionId: this.id,
+        shell: info.shell,
+        cwd: info.cwd
+      })
+      return ok({ connected: true, sessionId: this.id, initialCwd: info.cwd })
+    } catch (e) {
+      log.error('controller', 'local connect failed', { sessionId: this.id, err: e as Error })
+      if (session) {
+        this.closeHandled = true
+        try {
+          await session.disconnect()
+        } catch {
+          /* ignore */
+        }
+      }
+      if (epoch === this.lifecycleEpoch) {
+        this.local = null
+        this.kind = null
+        this.setConnState('disconnected')
+      }
+      const code = (e as { code?: string }).code ?? 'CONNECT_FAILED'
+      return err(code, (e as Error).message)
+    } finally {
+      this.connectInFlight = false
+    }
   }
 
   async connect(target: SshTarget): Promise<Result<ConnectResult>> {
@@ -176,17 +284,10 @@ class SessionHandle {
     this.connectInFlight = true
     const epoch = ++this.lifecycleEpoch
 
-    if (this.ssh) {
-      this.closeHandled = true
-      try {
-        await this.ssh.disconnect()
-      } catch {
-        /* ignore */
-      }
-      this.ssh = null
-      this.portForwarder?.destroyAll()
-      this.portForwarder = null
-    }
+    this.closeHandled = true
+    await this.teardownBackends()
+    this.closeHandled = false
+    this.localShell = ''
 
     let session: SshSession | null = null
     try {
@@ -215,10 +316,13 @@ class SessionHandle {
       }
 
       this.ssh = session
+      this.kind = 'ssh'
       this.target = target
       this.title = defaultTitle(target)
       this.closeHandled = false
       this.osc52.reset()
+
+      if (this.lastDims) session.resize(this.lastDims)
 
       if (this.host.getFlags().portForwards) {
         this.portForwarder = new PortForwarder(() => this.ssh?.getClient() ?? null)
@@ -227,7 +331,8 @@ class SessionHandle {
 
       this.interactive = true
       this.provider = 'shell'
-      this.providerLocked = false
+      this.providerManual = false
+      this.cachedProcessHint = undefined
       this.reconnectAttempt = 0
       this.reconnectCancelled = false
 
@@ -235,7 +340,7 @@ class SessionHandle {
       this.pushProviderSession()
       this.host.onSummaryChanged()
       log.info('controller', 'connected', { sessionId: this.id, ...redactTarget(target), cwd: info.initialCwd })
-      this.host.onStatus('info', `Connected to ${target.user}@${target.host}.`, undefined, this.id)
+      // No success toast — top bar / session rail already show live connection.
       void this.maybeEnterTmux('connect')
       return ok({ connected: true, sessionId: this.id, initialCwd: info.initialCwd })
     } catch (e) {
@@ -250,6 +355,7 @@ class SessionHandle {
       }
       if (epoch === this.lifecycleEpoch) {
         this.ssh = null
+        this.kind = null
         this.setConnState('disconnected')
       }
       const code = (e as { code?: string }).code ?? 'CONNECT_FAILED'
@@ -274,14 +380,10 @@ class SessionHandle {
     } catch {
       /* ignore */
     }
-    try {
-      await this.ssh?.disconnect()
-    } finally {
-      this.ssh = null
-      this.target = null
-      this.portForwarder?.destroyAll()
-      this.portForwarder = null
-    }
+    await this.teardownBackends()
+    this.target = null
+    this.kind = null
+    this.localShell = ''
     this.setConnState('disconnected')
     this.host.onSummaryChanged()
     return ok(true)
@@ -302,15 +404,10 @@ class SessionHandle {
     } catch {
       /* ignore */
     }
-    try {
-      await this.ssh?.disconnect()
-    } catch {
-      /* ignore */
-    }
-    this.ssh = null
+    await this.teardownBackends()
     this.target = null
-    this.portForwarder?.destroyAll()
-    this.portForwarder = null
+    this.kind = null
+    this.localShell = ''
     this.setConnState('disconnected')
     this.host.onStatus('info', 'Reconnection cancelled.', undefined, this.id)
     this.host.onSummaryChanged()
@@ -319,7 +416,8 @@ class SessionHandle {
 
   sendInput(data: string): void {
     try {
-      this.ssh?.write(data)
+      if (this.local?.isConnected()) this.local.write(data)
+      else this.ssh?.write(data)
     } catch (e) {
       this.host.onStatus('error', (e as Error).message, undefined, this.id)
     }
@@ -327,7 +425,8 @@ class SessionHandle {
 
   resize(cols: number, rows: number): void {
     this.lastDims = { cols, rows }
-    this.ssh?.resize({ cols, rows })
+    if (this.local?.isConnected()) this.local.resize({ cols, rows })
+    else this.ssh?.resize({ cols, rows })
   }
 
   private handleSessionClose(info: { intentional: boolean }): void {
@@ -336,9 +435,20 @@ class SessionHandle {
 
     if (info.intentional) {
       log.info('controller', 'session closed intentionally', { sessionId: this.id })
+      this.ssh = null
+      this.local = null
       this.setConnState('disconnected')
       this.portForwarder?.destroyAll()
       this.portForwarder = null
+      this.host.onSummaryChanged()
+      return
+    }
+
+    // Local shell exit: no auto-reconnect (user can re-open Local).
+    if (this.kind === 'local') {
+      log.info('controller', 'local shell exited', { sessionId: this.id })
+      this.local = null
+      this.setConnState('disconnected')
       this.host.onSummaryChanged()
       return
     }
@@ -348,7 +458,12 @@ class SessionHandle {
       ...(this.target ? redactTarget(this.target) : {})
     })
     this.portForwarder?.dropActiveTunnels()
-    this.host.onOutput(this.id, '\r\n\x1b[33m[Connection lost. Reconnecting...]\x1b[0m\r\n')
+    // Drop mouse/alt-screen modes immediately so xterm stops emitting SGR
+    // mouse reports into a dead session (would show as garbage after reconnect).
+    this.host.onOutput(
+      this.id,
+      `\r\n${XTERM_MODE_SOFT_RESET}\x1b[33m[Connection lost. Reconnecting...]\x1b[0m\r\n`
+    )
     this.startReconnect()
   }
 
@@ -436,7 +551,12 @@ class SessionHandle {
 
       if (this.lastDims) session.resize(this.lastDims)
 
-      this.host.onOutput(this.id, '\r\n\x1b[32m[Reconnected]\x1b[0m\r\n')
+      // Soft-reset client modes again (new PTY is clean; xterm may still have
+      // mouse tracking from the previous remote app) then banner.
+      this.host.onOutput(
+        this.id,
+        `\r\n${XTERM_MODE_SOFT_RESET}\x1b[32m[Reconnected]\x1b[0m\r\n`
+      )
 
       if (this.host.getFlags().portForwards) {
         this.portForwarder?.resumeAll()
@@ -445,12 +565,7 @@ class SessionHandle {
       this.reconnectAttempt = 0
       this.setConnState('connected')
       log.info('controller', 'reconnected', { sessionId: this.id, ...redactTarget(this.target) })
-      this.host.onStatus(
-        'info',
-        `Reconnected to ${this.target.user}@${this.target.host}.`,
-        5000,
-        this.id
-      )
+      // Terminal already prints [Reconnected]; skip floating success toast.
       void this.maybeEnterTmux('reconnect')
     } catch (e) {
       if (this.reconnectCancelled || !this.target || epoch !== this.lifecycleEpoch) {
@@ -495,6 +610,20 @@ class SessionHandle {
       log.warn('controller', 'session error (non-fatal for listeners)', { sessionId: this.id, err: e })
       this.host.onStatus('error', e.message, 6000, this.id)
     })
+  }
+
+  private attachLocalListeners(session: LocalSession): void {
+    session.on('data', (chunk: string) => this.handleOutput(chunk))
+    session.on('close', (info: { intentional: boolean }) => this.handleSessionClose(info))
+  }
+
+  private recentOutputLines(): string[] {
+    if (this.local?.isConnected()) return this.local.recentOutput()
+    return this.ssh?.recentOutput() ?? []
+  }
+
+  private isBackendLive(): boolean {
+    return !!(this.ssh?.isConnected() || this.local?.isConnected())
   }
 
   private setConnState(state: ConnectionState, extra?: Partial<ConnStatePayload>): void {
@@ -546,25 +675,63 @@ class SessionHandle {
       text = chunk
     }
 
-    if (this.host.getFlags().providerDetect && !this.providerLocked) {
-      try {
-        const detected = detectProvider({
-          recentOutput: this.ssh?.recentOutput() ?? [],
-          currentLine: ''
-        })
-        if (detected !== 'shell') {
-          this.provider = detected
-          this.providerLocked = true
-          this.pushProviderSession()
-          this.host.onStatus('info', `Detected ${detected}.`, 3000, this.id)
-          this.host.onSummaryChanged()
-        }
-      } catch (e) {
-        log.warn('controller', 'provider detect failed (ignored)', { err: e as Error })
-      }
+    if (this.host.getFlags().providerDetect && !this.providerManual) {
+      this.maybeAutoDetectProvider()
     }
     if (!text) return
     this.host.onOutput(this.id, text)
+  }
+
+  /**
+   * Continuous provider detection (throttled).
+   * Manual UI selection sets providerManual and skips this path.
+   * Leaving Claude/Codex (process gone + shell prompt) returns to shell.
+   */
+  private maybeAutoDetectProvider(): void {
+    const now = Date.now()
+    if (now - this.lastProviderDetectAt < 400) return
+    this.lastProviderDetectAt = now
+    try {
+      const processHint = this.probeProcessHint(now)
+      const detected = detectProvider({
+        recentOutput: this.recentOutputLines(),
+        currentLine: '',
+        processHint
+      })
+      if (detected === this.provider) return
+      const prev = this.provider
+      this.provider = detected
+      this.pushProviderSession()
+      this.host.onSummaryChanged()
+      if (detected === 'shell' && (prev === 'claude' || prev === 'codex')) {
+        this.host.onStatus('info', 'Provider: shell', 2000, this.id)
+      } else if (detected !== 'shell') {
+        this.host.onStatus('info', `Detected ${detected}.`, 2500, this.id)
+      }
+    } catch (e) {
+      log.warn('controller', 'provider detect failed (ignored)', { err: e as Error })
+    }
+  }
+
+  /** Local PTY: walk process tree for claude/codex (cached ~800ms). */
+  private probeProcessHint(now: number): 'claude' | 'codex' | 'none' | undefined {
+    if (!this.local?.isConnected()) return undefined
+    if (now - this.lastProcessProbeAt < 800 && this.cachedProcessHint !== undefined) {
+      return this.cachedProcessHint
+    }
+    this.lastProcessProbeAt = now
+    const pid = this.local.pid()
+    if (!pid) {
+      this.cachedProcessHint = 'none'
+      return 'none'
+    }
+    try {
+      const hit = findAiChildProcess(pid)
+      this.cachedProcessHint = hit ?? 'none'
+    } catch {
+      this.cachedProcessHint = undefined
+    }
+    return this.cachedProcessHint
   }
 
   private async maybeEnterTmux(reason: 'connect' | 'reconnect'): Promise<void> {
@@ -739,25 +906,30 @@ class SessionHandle {
     load: () => Promise<NormalizedImage | null>
   }): Promise<Result<UploadedBlob>> {
     let placeholderId: string | null = null
-    const session = this.ssh
+    const ssh = this.ssh
+    const local = this.local
+    const isLocal = !!local?.isConnected()
     try {
-      if (!session?.isConnected()) return err('NOT_CONNECTED', 'Connect to a host first.')
+      if (!isLocal && !ssh?.isConnected()) {
+        return err('NOT_CONNECTED', 'Open a local shell or SSH session first.')
+      }
       const img = await opts.load()
       if (!img) return err('NO_IMAGE', 'No image found.')
 
       const previewUrl = previewDataUrl(img)
       placeholderId = this.addShelfPlaceholder(previewUrl, opts.sourcePath)
 
-      const { blob } = await uploadBlob(session, img)
+      const { blob } = isLocal ? await saveLocalBlob(img) : await uploadBlob(ssh!, img)
       const withPreview: UploadedBlob = { ...blob, previewUrl }
       log.info('controller', 'image uploaded', {
         sessionId: this.id,
+        kind: isLocal ? 'local' : 'ssh',
         hash: blob.hash,
         bytes: blob.bytes,
         ext: blob.ext
       })
 
-      if (this.ssh !== session || !session.isConnected()) {
+      if (!this.isBackendLive()) {
         this.commitShelfPlaceholder(placeholderId, withPreview, opts.prompt)
         return ok(withPreview)
       }
@@ -797,7 +969,7 @@ class SessionHandle {
 
   async pasteRemotePath(remotePath: string, prompt?: string): Promise<Result<true>> {
     try {
-      if (!this.ssh?.isConnected()) return err('NOT_CONNECTED', 'Connect to a host first.')
+      if (!this.isBackendLive()) return err('NOT_CONNECTED', 'Open a session first.')
       const sessionCtx: ProviderSession = {
         provider: this.provider,
         interactive: this.interactive,
@@ -818,7 +990,8 @@ class SessionHandle {
           ? fragment
           : `${fragment}\n`
         : fragment
-    this.ssh?.write(text)
+    if (this.local?.isConnected()) this.local.write(text)
+    else this.ssh?.write(text)
   }
 
   getSession(): Result<ProviderSession> {
@@ -827,7 +1000,7 @@ class SessionHandle {
 
   setProvider(provider: ProviderId): Result<ProviderSession> {
     this.provider = provider
-    this.providerLocked = true
+    this.providerManual = true
     const snap = this.sessionSnapshot()
     this.pushProviderSession(snap)
     this.host.onSummaryChanged()
@@ -835,12 +1008,17 @@ class SessionHandle {
   }
 
   detectProvider(): Result<ProviderId> {
+    // Palette "re-detect": clear manual lock and re-run heuristics + process probe.
+    this.providerManual = false
+    this.cachedProcessHint = undefined
+    this.lastProcessProbeAt = 0
+    const processHint = this.probeProcessHint(Date.now())
     const detected = detectProvider({
-      recentOutput: this.ssh?.recentOutput() ?? [],
-      currentLine: ''
+      recentOutput: this.recentOutputLines(),
+      currentLine: '',
+      processHint
     })
     this.provider = detected
-    this.providerLocked = true
     this.pushProviderSession()
     this.host.onSummaryChanged()
     return ok(detected)
@@ -865,6 +1043,9 @@ class SessionHandle {
   }): Promise<Result<PortForwardRule>> {
     if (!this.host.getFlags().portForwards) {
       return err('FEATURE_DISABLED', 'Port forwarding is disabled (Terminal only mode).')
+    }
+    if (this.kind === 'local') {
+      return err('NOT_SUPPORTED', 'Port forwarding requires an SSH session.')
     }
     if (!this.portForwarder) return err('NOT_CONNECTED', 'Connect to a host first.')
     try {
@@ -1174,6 +1355,12 @@ export class PorticoController {
     return r.value.connect(target)
   }
 
+  async connectLocal(sessionId: SessionId): Promise<Result<ConnectResult>> {
+    const r = this.require(sessionId)
+    if (!r.ok) return r
+    return r.value.connectLocal()
+  }
+
   async disconnect(sessionId: SessionId): Promise<Result<true>> {
     const r = this.require(sessionId)
     if (!r.ok) return r
@@ -1329,7 +1516,22 @@ export class PorticoController {
     ttlMs?: number,
     sessionId?: SessionId
   ): void {
-    const payload: StatusPayload = { level, message, ttlMs, sessionId }
+    // Default auto-dismiss so banners never sit over the terminal forever.
+    // error: sticky (ttl omitted) unless caller passes an explicit ttlMs.
+    const resolvedTtl =
+      ttlMs !== undefined
+        ? ttlMs
+        : level === 'info'
+          ? 3500
+          : level === 'warn'
+            ? 6000
+            : undefined
+    const payload: StatusPayload = {
+      level,
+      message,
+      ttlMs: resolvedTtl && resolvedTtl > 0 ? resolvedTtl : undefined,
+      sessionId
+    }
     for (const cb of this.statusListeners) cb(payload)
   }
 }

@@ -6,6 +6,8 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { SearchAddon } from '@xterm/addon-search'
 import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
+import type { ConnectionState } from '@shared/types.js'
+import { XTERM_MODE_SOFT_RESET } from '@shared/constants.js'
 import type { TerminalSettings } from '../lib/terminal-settings.js'
 import { xtermTheme } from '../lib/terminal-settings.js'
 import { OutputBuffer } from '../lib/output-buffer.js'
@@ -14,6 +16,8 @@ interface Props {
   sessionId: string
   /** When false, terminal stays mounted but hidden (preserve scrollback). */
   active?: boolean
+  /** Connection lifecycle — used to soft-reset sticky modes on reconnect. */
+  connState?: ConnectionState
   settings: TerminalSettings
   /** Open the clipboard-image paste flow (parent owns the dialog). */
   onPasteImage?: () => void
@@ -28,7 +32,13 @@ type CtxMenu = { x: number; y: number } | null
  *  - WebGL when enabled, search (⌘F), copy-on-select, context menu
  *  - Keep mounted when inactive so scrollback survives tab switches
  */
-export function Terminal({ sessionId, active = true, settings, onPasteImage }: Props) {
+export function Terminal({
+  sessionId,
+  active = true,
+  connState = 'connected',
+  settings,
+  onPasteImage
+}: Props) {
   const { t } = useI18n()
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<XTerm | null>(null)
@@ -39,6 +49,9 @@ export function Terminal({ sessionId, active = true, settings, onPasteImage }: P
   sessionIdRef.current = sessionId
   const settingsRef = useRef(settings)
   settingsRef.current = settings
+  const prevConnRef = useRef<ConnectionState>(connState)
+  const liveRef = useRef(connState === 'connected')
+  liveRef.current = connState === 'connected'
 
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
@@ -152,7 +165,12 @@ export function Terminal({ sessionId, active = true, settings, onPasteImage }: P
       return true
     })
 
-    const inputDisp = term.onData((data) => window.portico.sendInput(sessionIdRef.current, data))
+    // Drop input while not fully connected (reconnect gap) so mouse/key
+    // leftovers never hit a half-open PTY.
+    const inputDisp = term.onData((data) => {
+      if (!liveRef.current) return
+      window.portico.sendInput(sessionIdRef.current, data)
+    })
 
     // Coalesce bursty PTY output so large TUI redraws don't stall the UI thread.
     const outBuf = new OutputBuffer((data) => {
@@ -230,6 +248,25 @@ export function Terminal({ sessionId, active = true, settings, onPasteImage }: P
     term.focus()
     window.portico.resize(sessionId, term.cols, term.rows)
   }, [active, sessionId])
+
+  // Soft-reset sticky client modes on disconnect/reconnect transitions.
+  // Does not clear scrollback (unlike term.reset()).
+  useEffect(() => {
+    const term = termRef.current
+    const prev = prevConnRef.current
+    prevConnRef.current = connState
+    if (!term) return
+
+    const enteringReconnect = connState === 'reconnecting' && prev !== 'reconnecting'
+    const reconnected = connState === 'connected' && prev === 'reconnecting'
+    if (!enteringReconnect && !reconnected) return
+
+    try {
+      term.write(XTERM_MODE_SOFT_RESET)
+    } catch {
+      /* disposing */
+    }
+  }, [connState])
 
   // ---- live-apply appearance when settings change without remount ---------
   useEffect(() => {
