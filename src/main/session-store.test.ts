@@ -67,8 +67,8 @@ describe('load/save round-trip', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
-  it('writes and reads sessions.json', () => {
-    saveSessionSnapshot(dir, {
+  it('writes and reads sessions.json', async () => {
+    await saveSessionSnapshot(dir, {
       version: 1,
       restoreOnLaunch: true,
       sessions: [

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { PortForwardStatus } from '@shared/types.js'
 import { useI18n } from '../i18n/index.js'
 
@@ -17,13 +17,21 @@ export function PortForwards({ sessionId, forwards, enabled }: Props) {
   const [remotePort, setRemotePort] = useState('')
   const [error, setError] = useState<string | null>(null)
 
+  useEffect(() => {
+    setShowForm(false)
+    setLocalPort('')
+    setRemotePort('')
+    setRemoteHost('127.0.0.1')
+    setError(null)
+  }, [sessionId])
+
   const addForward = async () => {
     setError(null)
     const lp = Number(localPort)
     const rp = Number(remotePort)
-    if (!lp || lp < 1 || lp > 65535) { setError('Invalid local port'); return }
-    if (!rp || rp < 1 || rp > 65535) { setError('Invalid remote port'); return }
-    if (!remoteHost.trim()) { setError('Remote host required'); return }
+    if (!lp || lp < 1 || lp > 65535) { setError(t('pf.errLocalPort')); return }
+    if (!rp || rp < 1 || rp > 65535) { setError(t('pf.errRemotePort')); return }
+    if (!remoteHost.trim()) { setError(t('pf.errHostRequired')); return }
 
     const r = await window.portico.addPortForward(sessionId, {
       localPort: lp,
@@ -102,7 +110,7 @@ export function PortForwards({ sessionId, forwards, enabled }: Props) {
                   className="pf-input"
                 />
                 <button className="btn primary" style={{ fontSize: 11, padding: '3px 8px' }} onClick={addForward}>
-                  Add
+                  {t('pf.addBtn')}
                 </button>
               </div>
               {error && <div className="pf-error">{error}</div>}

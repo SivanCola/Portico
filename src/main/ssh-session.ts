@@ -122,6 +122,7 @@ export class SshSession extends EventEmitter {
       opts.onPhase?.('tcp')
       opts.onPhase?.('auth')
 
+      const hostVerifier = await createHostVerifier(t.host, t.port)
       await new Promise<void>((resolve, reject) => {
         const onErr = (err: Error) => {
           const code =
@@ -148,7 +149,7 @@ export class SshSession extends EventEmitter {
           privateKey,
           passphrase: t.privateKeyPassphrase,
           agent,
-          hostVerifier: createHostVerifier(t.host, t.port),
+          hostVerifier,
           readyTimeout: 20_000,
           keepaliveInterval: 15_000,
           keepaliveCountMax: 3

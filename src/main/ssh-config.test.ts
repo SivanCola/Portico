@@ -55,7 +55,7 @@ describe('parseSshConfig', () => {
 })
 
 describe('resolveAlias', () => {
-  it('expands a fully-specified alias', () => {
+  it('expands a fully-specified alias', async () => {
     const cfg = parseSshConfig(`
       Host noban-vm
         HostName relay.example.com
@@ -63,7 +63,7 @@ describe('resolveAlias', () => {
         User root
         IdentityFile ~/.ssh/noban.pem
     `)
-    const r = resolveAlias('noban-vm', cfg)
+    const r = await resolveAlias('noban-vm', cfg)
     expect(r).toMatchObject({
       matched: true,
       host: 'relay.example.com',
@@ -72,29 +72,29 @@ describe('resolveAlias', () => {
     })
   })
 
-  it('defaults host to the alias when HostName is absent', () => {
+  it('defaults host to the alias when HostName is absent', async () => {
     const cfg = parseSshConfig(`Host mybox\n  User ubuntu\n`)
-    const r = resolveAlias('mybox', cfg)
+    const r = await resolveAlias('mybox', cfg)
     expect(r.host).toBe('mybox')
     expect(r.user).toBe('ubuntu')
     expect(r.port).toBe(22) // default
   })
 
-  it('reports matched=false for an unknown alias', () => {
+  it('reports matched=false for an unknown alias', async () => {
     const cfg = parseSshConfig(`Host foo\n  HostName bar\n`)
-    const r = resolveAlias('nope', cfg)
+    const r = await resolveAlias('nope', cfg)
     expect(r.matched).toBe(false)
     // host falls back to the verbatim alias so a manual entry still works
     expect(r.host).toBe('nope')
   })
 
-  it('honors glob patterns as a fallback match', () => {
+  it('honors glob patterns as a fallback match', async () => {
     const cfg = parseSshConfig(`
       Host *.internal
         User deploy
         Port 2222
     `)
-    const r = resolveAlias('db.internal', cfg)
+    const r = await resolveAlias('db.internal', cfg)
     expect(r.matched).toBe(true)
     expect(r.user).toBe('deploy')
     expect(r.port).toBe(2222)
@@ -102,7 +102,7 @@ describe('resolveAlias', () => {
     expect(r.host).toBe('db.internal')
   })
 
-  it('applies first-match-wins per key across multiple blocks', () => {
+  it('applies first-match-wins per key across multiple blocks', async () => {
     // OpenSSH walks every matching block; each key takes its first value.
     const cfg = parseSshConfig(`
       Host prod-*
@@ -112,7 +112,7 @@ describe('resolveAlias', () => {
         HostName db.prod.example.com
         Port 22
     `)
-    const r = resolveAlias('prod-db', cfg)
+    const r = await resolveAlias('prod-db', cfg)
     // First block wins for User and Port (its values come first).
     expect(r.user).toBe('produser')
     expect(r.port).toBe(2200)
@@ -120,20 +120,20 @@ describe('resolveAlias', () => {
     expect(r.host).toBe('db.prod.example.com')
   })
 
-  it('takes the first IdentityFile among matching blocks', () => {
+  it('takes the first IdentityFile among matching blocks', async () => {
     const cfg = parseSshConfig(`
       Host shared
         IdentityFile ~/.ssh/a
       Host shared
         IdentityFile ~/.ssh/b
     `)
-    const r = resolveAlias('shared', cfg)
+    const r = await resolveAlias('shared', cfg)
     expect(r.identityFile).toBe(`${process.env.HOME}/.ssh/a`)
   })
 })
 
 describe('listHostAliases', () => {
-  it('returns literal host tokens only, dropping globs', () => {
+  it('returns literal host tokens only, dropping globs', async () => {
     const cfg = parseSshConfig(`
       Host noban-vm
         HostName relay.example.com
@@ -142,7 +142,7 @@ describe('listHostAliases', () => {
       Host gitlab
         HostName git.company.com
     `)
-    const aliases = listHostAliases(cfg)
+    const aliases = await listHostAliases(cfg)
     expect(aliases.map((a) => a.alias)).toEqual(['noban-vm', 'gitlab'])
     expect(aliases[0]).toMatchObject({
       alias: 'noban-vm',
@@ -150,9 +150,9 @@ describe('listHostAliases', () => {
     })
   })
 
-  it('dedupes repeated aliases', () => {
+  it('dedupes repeated aliases', async () => {
     const cfg = parseSshConfig(`Host foo\nHost foo\n  HostName bar\n`)
-    const aliases = listHostAliases(cfg)
+    const aliases = await listHostAliases(cfg)
     expect(aliases).toHaveLength(1)
     expect(aliases[0].alias).toBe('foo')
   })
@@ -168,7 +168,7 @@ describe('loadSshConfig (filesystem + Include)', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
-  it('expands Include with a glob and merges the included blocks', () => {
+  it('expands Include with a glob and merges the included blocks', async () => {
     writeFileSync(
       join(dir, 'config'),
       ['Include config.d/*', 'Host top-level', '  HostName top.example.com'].join('\n')
@@ -179,8 +179,8 @@ describe('loadSshConfig (filesystem + Include)', () => {
       ['Host noban-vm', '  HostName relay.example.com', '  Port 10049', '  User root'].join('\n')
     )
 
-    const cfg = loadSshConfig(dir)
-    const r = resolveAlias('noban-vm', cfg)
+    const cfg = await loadSshConfig(dir)
+    const r = await resolveAlias('noban-vm', cfg)
     expect(r).toMatchObject({
       matched: true,
       host: 'relay.example.com',
@@ -188,10 +188,10 @@ describe('loadSshConfig (filesystem + Include)', () => {
       user: 'root'
     })
     // The top-level block from the main file is still present.
-    expect(resolveAlias('top-level', cfg).host).toBe('top.example.com')
+    expect((await resolveAlias('top-level', cfg)).host).toBe('top.example.com')
   })
 
-  it('expands Include inline so trailing Host * does not steal earlier values', () => {
+  it('expands Include inline so trailing Host * does not steal earlier values', async () => {
     // Classic OpenSSH layout: specific hosts via Include, then Host * defaults.
     // If Include were appended after the whole file, Host * would win User.
     const orderDir = join(dir, 'include-order')
@@ -205,12 +205,12 @@ describe('loadSshConfig (filesystem + Include)', () => {
       ['Host myserver', '  HostName 10.0.0.4', '  User correct', '  Port 2222'].join('\n')
     )
 
-    const cfg = loadSshConfig(orderDir)
+    const cfg = await loadSshConfig(orderDir)
     // Included block must appear before Host * in the merged list.
     const patterns = cfg.map((b) => b.patterns.join(','))
     expect(patterns.indexOf('myserver')).toBeLessThan(patterns.indexOf('*'))
 
-    const r = resolveAlias('myserver', cfg)
+    const r = await resolveAlias('myserver', cfg)
     expect(r).toMatchObject({
       matched: true,
       host: '10.0.0.4',
@@ -219,13 +219,13 @@ describe('loadSshConfig (filesystem + Include)', () => {
     })
   })
 
-  it('returns an empty config when the config file is missing', () => {
-    const empty = loadSshConfig(join(dir, 'does-not-exist'))
+  it('returns an empty config when the config file is missing', async () => {
+    const empty = await loadSshConfig(join(dir, 'does-not-exist'))
     expect(empty).toEqual([])
-    expect(listHostAliases(empty)).toEqual([])
+    expect(await listHostAliases(empty)).toEqual([])
   })
 
-  it('stops on include cycles without hanging', () => {
+  it('stops on include cycles without hanging', async () => {
     const cyclicDir = join(dir, 'cyclic-root')
     mkdirSync(cyclicDir, { recursive: true })
     // config includes b, b includes config — must terminate via seen-set / cap.
@@ -233,9 +233,9 @@ describe('loadSshConfig (filesystem + Include)', () => {
     mkdirSync(join(cyclicDir, 'sub'), { recursive: true })
     writeFileSync(join(cyclicDir, 'sub', 'b'), 'Include ../config\nHost b-host\n  HostName b\n')
 
-    const cfg = loadSshConfig(cyclicDir)
+    const cfg = await loadSshConfig(cyclicDir)
     // Should not throw or hang; at least one host resolves.
-    expect(resolveAlias('a-host', cfg).host).toBe('a')
-    expect(resolveAlias('b-host', cfg).host).toBe('b')
+    expect((await resolveAlias('a-host', cfg)).host).toBe('a')
+    expect((await resolveAlias('b-host', cfg)).host).toBe('b')
   })
 })

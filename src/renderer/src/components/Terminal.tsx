@@ -5,6 +5,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { SearchAddon } from '@xterm/addon-search'
 import { WebglAddon } from '@xterm/addon-webgl'
+import { CanvasAddon } from '@xterm/addon-canvas'
 import '@xterm/xterm/css/xterm.css'
 import type { ConnectionState } from '@shared/types.js'
 import { XTERM_MODE_SOFT_RESET } from '@shared/constants.js'
@@ -21,6 +22,11 @@ interface Props {
   settings: TerminalSettings
   /** Open the clipboard-image paste flow (parent owns the dialog). */
   onPasteImage?: () => void
+  /**
+   * Increment from parent to open the find bar (toolbar / palette).
+   * Only applied when this terminal is active.
+   */
+  findNonce?: number
 }
 
 type CtxMenu = { x: number; y: number } | null
@@ -37,7 +43,8 @@ export function Terminal({
   active = true,
   connState = 'connected',
   settings,
-  onPasteImage
+  onPasteImage,
+  findNonce = 0
 }: Props) {
   const { t } = useI18n()
   const hostRef = useRef<HTMLDivElement>(null)
@@ -119,11 +126,21 @@ export function Terminal({
             /* ignore */
           }
           webglRef.current = null
+          try {
+            term.loadAddon(new CanvasAddon())
+          } catch {
+            /* DOM renderer is always available as final fallback */
+          }
         })
         term.loadAddon(webgl)
         webglRef.current = webgl
       } catch {
         webglRef.current = null
+        try {
+          term.loadAddon(new CanvasAddon())
+        } catch {
+          /* ignore */
+        }
       }
     }
 
@@ -188,12 +205,27 @@ export function Terminal({
       window.portico.resize(sessionIdRef.current, cols, rows)
     )
 
-    const selDisp = term.onSelectionChange(() => {
+    // Copy-on-select only after the mouse is released — never mid-drag.
+    // onSelectionChange during drag fights macOS selection + clipboard image staging.
+    let pointerSelecting = false
+    const copyIfSelected = () => {
       if (!settingsRef.current.copyOnSelect) return
       if (!term.hasSelection()) return
       const text = term.getSelection()
       if (text) void navigator.clipboard.writeText(text)
-    })
+    }
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.button === 0) pointerSelecting = true
+    }
+    const onPointerUp = () => {
+      if (!pointerSelecting) return
+      pointerSelecting = false
+      // Let xterm finish updating the selection first.
+      requestAnimationFrame(copyIfSelected)
+    }
+    const onPointerCancel = () => {
+      pointerSelecting = false
+    }
 
     const ro = new ResizeObserver(() => {
       try {
@@ -208,15 +240,29 @@ export function Terminal({
 
     const onCtx = (e: MouseEvent) => {
       e.preventDefault()
+      e.stopPropagation()
+      // Don't open menu while a drag-select is in progress.
+      if (pointerSelecting) return
       setCtx({ x: e.clientX, y: e.clientY })
     }
+    // Block OS / browser text-drag chrome from the terminal canvas.
+    const onDragStart = (e: DragEvent) => {
+      e.preventDefault()
+    }
     host.addEventListener('contextmenu', onCtx)
+    host.addEventListener('pointerdown', onPointerDown)
+    window.addEventListener('pointerup', onPointerUp)
+    window.addEventListener('pointercancel', onPointerCancel)
+    host.addEventListener('dragstart', onDragStart)
 
     return () => {
       host.removeEventListener('contextmenu', onCtx)
+      host.removeEventListener('pointerdown', onPointerDown)
+      window.removeEventListener('pointerup', onPointerUp)
+      window.removeEventListener('pointercancel', onPointerCancel)
+      host.removeEventListener('dragstart', onDragStart)
       inputDisp.dispose()
       onResize.dispose()
-      selDisp.dispose()
       offOutput()
       outBuf.dispose()
       ro.disconnect()
@@ -294,6 +340,12 @@ export function Terminal({
   useEffect(() => {
     if (searchOpen) requestAnimationFrame(() => searchInputRef.current?.select())
   }, [searchOpen])
+
+  // Parent toolbar / palette requested find.
+  useEffect(() => {
+    if (!findNonce || !active) return
+    setSearchOpen(true)
+  }, [findNonce, active])
 
   const runSearch = (dir: 'next' | 'prev') => {
     const search = searchRef.current

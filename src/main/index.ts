@@ -254,6 +254,12 @@ function createWindow(): BrowserWindow {
     return { action: 'deny' }
   })
 
+  // Suppress Electron's default right-click menu (Inspect / Copy / …).
+  // The renderer owns terminal context menus; bare OS menus feel browser-y.
+  win.webContents.on('context-menu', (event) => {
+    event.preventDefault()
+  })
+
   wirePasteImageShortcut(win)
 
   // Drop the stale reference when this window closes so activate can recreate.
@@ -332,10 +338,15 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-// Flush session layout before quit so restore survives clean exits.
+// Flush session layout + log buffer before quit so restore survives clean exits.
 app.on('before-quit', () => {
   try {
     controller?.persistNow()
+  } catch {
+    /* ignore */
+  }
+  try {
+    log.flushSync()
   } catch {
     /* ignore */
   }
@@ -510,10 +521,10 @@ function registerIpc(c: PorticoController): void {
 
   // SSH config alias expansion (~/.ssh/config). Both read the live config so
   // edits the user makes outside the app are picked up without a restart.
-  handleArg<string, Result<ResolvedSshTarget>>(IPC.RESOLVE_SSH_ALIAS, (alias) =>
-    ok(resolveAlias(alias))
+  handleArg<string, Result<ResolvedSshTarget>>(IPC.RESOLVE_SSH_ALIAS, async (alias) =>
+    ok(await resolveAlias(alias))
   )
-  handle(IPC.LIST_SSH_HOSTS, () => ok(listHostAliases()))
+  handle(IPC.LIST_SSH_HOSTS, async () => ok(await listHostAliases()))
 
   // Feature flags (terminal-only / L2 isolation)
   handleArg<Partial<FeatureFlagsPayload>, Result<FeatureFlagsPayload>>(IPC.SET_FEATURE_FLAGS, (flags) => {

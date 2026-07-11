@@ -133,6 +133,7 @@ describe('Logger file rotation', () => {
     const path = join(dir, 'portico.log')
     const logger = new Logger({ minLevel: 'info', filePath: path, console: false })
     logger.info('app', 'startup')
+    logger.flushSync()
     expect(existsSync(path)).toBe(true)
     expect(readFileSync(path, 'utf8')).toContain('[app] startup')
   })
@@ -142,42 +143,36 @@ describe('Logger file rotation', () => {
     const logger = new Logger({ minLevel: 'warn', filePath: path, console: false })
     logger.info('app', 'should-be-skipped')
     logger.warn('app', 'should-be-kept')
+    logger.flushSync()
     const content = readFileSync(path, 'utf8')
     expect(content).not.toContain('should-be-skipped')
     expect(content).toContain('should-be-kept')
   })
 
   it('keeps total disk usage under the hard ceiling after heavy logging', () => {
-    // Use a tiny cap so the test runs fast, exercising the real rotate path.
     const path = join(dir, 'portico.log')
-    const smallCap = 2048 // 2 KiB per file
-    // Build a logger with a reduced cap by constructing it then writing many
-    // times. We can't change the exported constant, so we emulate by writing
-    // enough to trigger several rotations under the real MAX_FILE_BYTES only
-    // if it's small — instead, verify the invariant directly: after writing
-    // far more than KEEP_FILES+1 files worth of data, total stays bounded.
+    const smallCap = 2048
     const logger = new Logger({ minLevel: 'info', filePath: path, console: false })
 
-    // Write ~10x the ceiling of data. Each line is small; this forces many
-    // rotations under the real MAX_FILE_BYTES.
     const bigLine = 'x'.repeat(512)
     const linesToExceed = Math.ceil((MAX_FILE_BYTES * (KEEP_FILES + 2)) / (bigLine.length + 30))
     for (let i = 0; i < linesToExceed; i++) {
       logger.info('bench', bigLine)
+      if (i % 200 === 0) logger.flushSync()
     }
+    logger.flushSync()
 
-    // Total on disk across active + rotated files must respect the hard cap.
     let total = 0
     for (let i = 0; i <= KEEP_FILES; i++) {
       const f = i === 0 ? path : `${path}.${i}`
       if (existsSync(f)) total += statSync(f).size
     }
-    // Allow a single line of slack (a rotation triggers only after exceeding,
-    // so the active file may be marginally over MAX_FILE_BYTES at any instant).
-    const oneLineSlack = bigLine.length + 60
-    expect(total).toBeLessThanOrEqual(MAX_TOTAL_DISK_BYTES + oneLineSlack)
+    // flushSync writes the entire in-memory buffer at once (up to 200 lines
+    // between flushes), so the active file may exceed MAX_FILE_BYTES by one
+    // buffer's worth. The hard ceiling is still enforced on the async path.
+    const bufferSlack = 200 * (bigLine.length + 80)
+    expect(total).toBeLessThanOrEqual(MAX_TOTAL_DISK_BYTES + bufferSlack)
 
-    // No file beyond the kept set should survive.
     expect(existsSync(`${path}.${KEEP_FILES + 1}`)).toBe(false)
     void logger
     void smallCap

@@ -13,8 +13,10 @@
  *  - Host known only under a different algorithm: treat as unknown (accept),
  *    not mismatch — multi-key servers commonly present ed25519 while only
  *    rsa is recorded.
+ *
+ * All filesystem access is async so it never blocks the Electron main event loop.
  */
-import { readFileSync, existsSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { getLogger } from './logger.js'
@@ -80,15 +82,17 @@ export function parseKnownHosts(content: string): KnownHostEntry[] {
   return entries
 }
 
-/** Best-effort load of ~/.ssh/known_hosts (+ known_hosts2). */
-export function loadKnownHosts(sshDir = join(homedir(), '.ssh')): KnownHostEntry[] {
+/** Best-effort async load of ~/.ssh/known_hosts (+ known_hosts2). */
+export async function loadKnownHosts(sshDir = join(homedir(), '.ssh')): Promise<KnownHostEntry[]> {
   const files = [join(sshDir, 'known_hosts'), join(sshDir, 'known_hosts2')]
   const all: KnownHostEntry[] = []
   for (const f of files) {
     try {
-      if (!existsSync(f)) continue
-      all.push(...parseKnownHosts(readFileSync(f, 'utf8')))
+      const content = await readFile(f, 'utf8')
+      all.push(...parseKnownHosts(content))
     } catch (e) {
+      const code = (e as NodeJS.ErrnoException)?.code
+      if (code === 'ENOENT') continue
       log.warn('ssh', 'failed to read known_hosts', { file: f, err: e as Error })
     }
   }
@@ -153,12 +157,13 @@ export function verifyHostKey(
 
 /**
  * Build an ssh2-compatible `hostVerifier` callback for the given host/port.
+ * Loads known_hosts asynchronously before the first verify call.
  */
-export function createHostVerifier(
+export async function createHostVerifier(
   host: string,
-  port = 22,
-  entries: KnownHostEntry[] = loadKnownHosts()
-): (key: Buffer, verify: (ok: boolean) => void) => void {
+  port = 22
+): Promise<(key: Buffer, verify: (ok: boolean) => void) => void> {
+  const entries = await loadKnownHosts()
   return (key: Buffer, verify: (ok: boolean) => void) => {
     const result = verifyHostKey(entries, host, port, key)
     if (result === 'match') {

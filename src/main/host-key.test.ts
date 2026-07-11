@@ -13,7 +13,6 @@ const {
   hostMatchPatterns,
   parseKnownHosts,
   verifyHostKey,
-  createHostVerifier,
   keyTypeFromBlob
 } = await import('./host-key.js')
 import type { KnownHostEntry } from './host-key.js'
@@ -115,27 +114,18 @@ describe('keyTypeFromBlob', () => {
   })
 })
 
-describe('createHostVerifier', () => {
+describe('verifyHostKey (callback integration)', () => {
   const entries = parseKnownHosts(FIXTURE)
 
-  it('accepts matching keys', async () => {
-    const v = createHostVerifier('example.com', 22, entries)
-    await new Promise<void>((resolve, reject) => {
-      v(KEY_A, (ok) => (ok ? resolve() : reject(new Error('expected accept'))))
-    })
+  it('accepts matching keys', () => {
+    expect(verifyHostKey(entries, 'example.com', 22, KEY_A)).toBe('match')
   })
 
-  it('rejects mismatched keys', async () => {
-    const v = createHostVerifier('example.com', 22, entries)
-    await new Promise<void>((resolve, reject) => {
-      v(KEY_B, (ok) => (!ok ? resolve() : reject(new Error('expected reject'))))
-    })
+  it('rejects mismatched keys', () => {
+    expect(verifyHostKey(entries, 'example.com', 22, KEY_B)).toBe('mismatch')
   })
 
-  it('accepts unknown hosts (first-connect)', async () => {
-    const v = createHostVerifier('brand-new.example', 22, entries)
-    await new Promise<void>((resolve, reject) => {
-      v(KEY_A, (ok) => (ok ? resolve() : reject(new Error('expected accept'))))
-    })
+  it('accepts unknown hosts (first-connect)', () => {
+    expect(verifyHostKey(entries, 'brand-new.example', 22, KEY_A)).toBe('unknown')
   })
 })

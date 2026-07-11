@@ -1,30 +1,44 @@
 /**
  * Best-effort foreground AI process detection for local PTYs.
  * Walks the process tree under the shell PID looking for claude / codex.
+ *
+ * All calls are async (execFile) so they never block the Electron main event loop.
  */
-import { execFileSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { getLogger } from './logger.js'
 
 const log = getLogger()
 
 export type AiProcessName = 'claude' | 'codex'
 
+function execAsync(
+  cmd: string,
+  args: string[],
+  opts: { timeout: number; maxBuffer: number }
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, { encoding: 'utf8', ...opts }, (err, stdout) => {
+      if (err) reject(err)
+      else resolve(stdout)
+    })
+  })
+}
+
 /**
  * Return 'claude' | 'codex' if a matching descendant is running under `rootPid`,
  * otherwise undefined (plain shell / unknown).
  */
-export function findAiChildProcess(rootPid: number): AiProcessName | undefined {
+export async function findAiChildProcess(rootPid: number): Promise<AiProcessName | undefined> {
   if (!rootPid || rootPid < 2) return undefined
   if (process.platform === 'win32') return findAiChildProcessWin(rootPid)
   return findAiChildProcessUnix(rootPid, 0)
 }
 
-function findAiChildProcessUnix(rootPid: number, depth: number): AiProcessName | undefined {
+async function findAiChildProcessUnix(rootPid: number, depth: number): Promise<AiProcessName | undefined> {
   if (depth > 8) return undefined
   let childPids: number[] = []
   try {
-    const out = execFileSync('pgrep', ['-P', String(rootPid)], {
-      encoding: 'utf8',
+    const out = await execAsync('pgrep', ['-P', String(rootPid)], {
       timeout: 400,
       maxBuffer: 64 * 1024
     })
@@ -38,31 +52,28 @@ function findAiChildProcessUnix(rootPid: number, depth: number): AiProcessName |
   }
 
   for (const pid of childPids) {
-    const hit = classifyPid(pid)
+    const hit = await classifyPid(pid)
     if (hit) return hit
-    const nested = findAiChildProcessUnix(pid, depth + 1)
+    const nested = await findAiChildProcessUnix(pid, depth + 1)
     if (nested) return nested
   }
   return undefined
 }
 
-function classifyPid(pid: number): AiProcessName | undefined {
+async function classifyPid(pid: number): Promise<AiProcessName | undefined> {
   try {
-    // comm + args so "node …/claude" still matches
-    const out = execFileSync('ps', ['-o', 'comm=,args=', '-p', String(pid)], {
-      encoding: 'utf8',
+    const out = await execAsync('ps', ['-o', 'comm=,args=', '-p', String(pid)], {
       timeout: 400,
       maxBuffer: 32 * 1024
-    }).trim()
-    return classifyCommandLine(out)
+    })
+    return classifyCommandLine(out.trim())
   } catch {
     return undefined
   }
 }
 
-function findAiChildProcessWin(rootPid: number): AiProcessName | undefined {
+async function findAiChildProcessWin(rootPid: number): Promise<AiProcessName | undefined> {
   try {
-    // PowerShell one-liner: list child process names under root
     const script = [
       `$p = Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq ${rootPid} };`,
       `while ($p) {`,
@@ -71,10 +82,10 @@ function findAiChildProcessWin(rootPid: number): AiProcessName | undefined {
       `  $p = Get-CimInstance Win32_Process | Where-Object { $ids -contains $_.ParentProcessId };`,
       `}`
     ].join(' ')
-    const out = execFileSync(
+    const out = await execAsync(
       'powershell.exe',
       ['-NoProfile', '-Command', script],
-      { encoding: 'utf8', timeout: 1500, maxBuffer: 256 * 1024 }
+      { timeout: 1500, maxBuffer: 256 * 1024 }
     )
     return classifyCommandLine(out)
   } catch (e) {
@@ -86,7 +97,6 @@ function findAiChildProcessWin(rootPid: number): AiProcessName | undefined {
 /** Exported for unit tests. */
 export function classifyCommandLine(text: string): AiProcessName | undefined {
   const s = text.toLowerCase()
-  // Prefer claude if both appear (rare).
   if (/(^|\/|\\|\s)claude(\s|$|\.exe)/.test(s) || s.includes('claude-code') || s.includes('@anthropic')) {
     return 'claude'
   }

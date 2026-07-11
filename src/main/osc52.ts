@@ -32,12 +32,17 @@ export interface Osc52FeedResult {
 /**
  * Stateful filter: feed PTY chunks, get cleaned output + clipboard writes.
  */
+/** Give up on an incomplete OSC 52 sequence after this many ms. */
+const OSC52_PENDING_TIMEOUT_MS = 2000
+
 export class Osc52Filter {
   private pending = ''
+  private pendingSince = 0
 
   /** Reset when a new SSH session starts. */
   reset(): void {
     this.pending = ''
+    this.pendingSince = 0
   }
 
   feed(chunk: string): Osc52FeedResult {
@@ -45,8 +50,21 @@ export class Osc52Filter {
       return { passthrough: '', clipboardWrites: [] }
     }
 
+    // Timeout: if we've been holding an incomplete sequence too long, give up.
+    if (this.pending && this.pendingSince > 0) {
+      const age = Date.now() - this.pendingSince
+      if (age > OSC52_PENDING_TIMEOUT_MS) {
+        // Flush stale pending as passthrough — the terminator never came.
+        const stale = this.pending
+        this.pending = ''
+        this.pendingSince = 0
+        return { passthrough: stale + chunk, clipboardWrites: [] }
+      }
+    }
+
     let data = this.pending + chunk
     this.pending = ''
+    this.pendingSince = 0
     const writes: string[] = []
     let out = ''
 
@@ -56,7 +74,10 @@ export class Osc52Filter {
         // No intro — but a trailing incomplete ESC or ESC] might start next chunk.
         const hold = holdbackPrefix(data)
         out += data.slice(0, data.length - hold.length)
-        this.pending = hold
+        if (hold) {
+          this.pending = hold
+          this.pendingSince = Date.now()
+        }
         break
       }
 
@@ -87,6 +108,7 @@ export class Osc52Filter {
           continue
         }
         this.pending = held
+        this.pendingSince = Date.now()
         break
       }
 

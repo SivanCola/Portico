@@ -108,7 +108,7 @@ export function SettingsCenter({
         <div className="settings-main">
           <header className="settings-main-header">
             <h2>{sections.find((s) => s.id === section)?.label ?? t('settings.title')}</h2>
-            <button type="button" className="btn ghost settings-close" onClick={onClose} title="Close">
+            <button type="button" className="btn ghost settings-close" onClick={onClose} title={t('common.close')}>
               ✕
             </button>
           </header>

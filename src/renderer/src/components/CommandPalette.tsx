@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useI18n } from '../i18n/index.js'
 
 export interface PaletteAction {
   id: string
@@ -16,6 +17,7 @@ interface Props {
 }
 
 export function CommandPalette({ open, actions, onClose }: Props) {
+  const { t } = useI18n()
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -68,7 +70,7 @@ export function CommandPalette({ open, actions, onClose }: Props) {
               run(filtered[selected])
             }
           }}
-          placeholder="Type a command…"
+          placeholder={t('palette.placeholder')}
           spellCheck={false}
         />
         <ul>

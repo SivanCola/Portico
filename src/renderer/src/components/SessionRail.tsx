@@ -120,19 +120,8 @@ export function SessionRail({
               ]
                 .filter(Boolean)
                 .join(' ')}
-              draggable={!editing}
-              onDragStart={(e) => {
-                if (editing) {
-                  e.preventDefault()
-                  return
-                }
-                e.dataTransfer.effectAllowed = 'move'
-                e.dataTransfer.setData(DND_MIME, s.id)
-                // Fallback for environments that only expose text/*
-                e.dataTransfer.setData('text/plain', s.id)
-                setDraggingId(s.id)
-              }}
-              onDragEnd={clearDrag}
+              // Row itself is NOT draggable — only the grip is.
+              // Whole-row drag made every click feel like a system "copy" drag.
               onDragOver={(e) => {
                 if (!draggingId || draggingId === s.id) return
                 e.preventDefault()
@@ -154,8 +143,7 @@ export function SessionRail({
               }}
               onDrop={(e) => {
                 e.preventDefault()
-                const fromId =
-                  e.dataTransfer.getData(DND_MIME) || e.dataTransfer.getData('text/plain')
+                const fromId = e.dataTransfer.getData(DND_MIME)
                 const position = dropTarget?.id === s.id ? dropTarget.position : 'before'
                 clearDrag()
                 if (!fromId || fromId === s.id) return
@@ -187,28 +175,48 @@ export function SessionRail({
                   />
                 </div>
               ) : (
-                <button
-                  type="button"
-                  className="session-rail-row"
-                  onClick={() => onSelect(s.id)}
-                  onDoubleClick={(e) => {
-                    e.preventDefault()
-                    e.stopPropagation()
-                    startRename(s)
-                  }}
-                  title={`${tip}\n${t('rail.renameHint')}\n${t('rail.dragHint')}`}
-                >
-                  <span className="session-rail-grip" aria-hidden title={t('rail.dragHint')}>
+                <div className="session-rail-row-wrap">
+                  <span
+                    className="session-rail-grip"
+                    draggable
+                    title={t('rail.dragHint')}
+                    aria-label={t('rail.dragHint')}
+                    onDragStart={(e) => {
+                      e.stopPropagation()
+                      e.dataTransfer.effectAllowed = 'move'
+                      // Custom MIME only — text/plain makes macOS show a "copy" cursor.
+                      e.dataTransfer.setData(DND_MIME, s.id)
+                      // Transparent drag image: less "browser file copy" chrome.
+                      const img = document.createElement('canvas')
+                      img.width = img.height = 1
+                      e.dataTransfer.setDragImage(img, 0, 0)
+                      setDraggingId(s.id)
+                    }}
+                    onDragEnd={clearDrag}
+                  >
                     ⋮⋮
                   </span>
-                  <span className={`dot ${stateClass(s.state)}`} />
-                  <span className="session-rail-label">
-                    {s.title}
-                    {s.unread && !active ? (
-                      <span className="session-unread" title={t('rail.unread')} />
-                    ) : null}
-                  </span>
-                </button>
+                  <button
+                    type="button"
+                    className="session-rail-row"
+                    draggable={false}
+                    onClick={() => onSelect(s.id)}
+                    onDoubleClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      startRename(s)
+                    }}
+                    title={`${tip}\n${t('rail.renameHint')}`}
+                  >
+                    <span className={`dot ${stateClass(s.state)}`} />
+                    <span className="session-rail-label">
+                      {s.title}
+                      {s.unread && !active ? (
+                        <span className="session-unread" title={t('rail.unread')} />
+                      ) : null}
+                    </span>
+                  </button>
+                </div>
               )}
               <button
                 type="button"

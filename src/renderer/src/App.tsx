@@ -122,12 +122,28 @@ function AppInner({
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null)
   const [dragOver, setDragOver] = useState(false)
   const [committing, setCommitting] = useState(false)
+  /** Subtle pill flash when provider auto-detects (no floating toast). */
+  const [providerFlash, setProviderFlash] = useState<ProviderId | null>(null)
+  /** Bump to open terminal find on the active session. */
+  const [findNonce, setFindNonce] = useState(0)
   const [termSettings, setTermSettings] = useState<TerminalSettings>(() => loadTerminalSettings())
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general')
   const statusTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const providerFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** Next provider change from user click — skip auto-detect flash. */
+  const providerChangeFromUser = useRef(false)
   const activeRef = useRef<SessionId | null>(null)
   activeRef.current = activeSessionId
+
+  const flashProviderPill = useCallback((p: ProviderId) => {
+    setProviderFlash(p)
+    if (providerFlashTimer.current) clearTimeout(providerFlashTimer.current)
+    providerFlashTimer.current = setTimeout(() => {
+      setProviderFlash(null)
+      providerFlashTimer.current = null
+    }, 2200)
+  }, [])
 
   const activeUi = activeSessionId ? byId[activeSessionId] : undefined
   const connState = activeUi?.connState ?? 'disconnected'
@@ -356,9 +372,28 @@ function AppInner({
 
   useEffect(() => {
     return window.portico.onSessionChanged((payload) => {
-      patchUi(payload.sessionId, { provider: payload.session })
+      const fromUser = providerChangeFromUser.current
+      providerChangeFromUser.current = false
+      setById((prev) => {
+        const cur = prev[payload.sessionId] ?? emptyUi()
+        const prevP = cur.provider?.provider
+        const nextP = payload.session.provider
+        // Auto-detect (or palette re-detect): flash the pill instead of a toast.
+        if (
+          !fromUser &&
+          payload.sessionId === activeRef.current &&
+          prevP != null &&
+          prevP !== nextP
+        ) {
+          queueMicrotask(() => flashProviderPill(nextP))
+        }
+        return {
+          ...prev,
+          [payload.sessionId]: { ...cur, provider: payload.session }
+        }
+      })
     })
-  }, [patchUi])
+  }, [flashProviderPill])
 
   useEffect(() => {
     return window.portico.onConnectionState((payload: ConnStatePayload) => {
@@ -388,7 +423,12 @@ function AppInner({
           next.connInfo = null
           next.provider = null
           next.portForwards = []
-          // Keep shelf / everLive so Terminal can unmount only after closeSession
+          // Local shell exit or clean disconnect: clear everLive so the
+          // connect hub reappears. SSH drops go through reconnecting first,
+          // so cur.connState will be 'reconnecting' — keep everLive for those.
+          if (cur.connState === 'connected') {
+            next.everLive = false
+          }
         }
         return next
       })
@@ -529,34 +569,35 @@ function AppInner({
 
   const disconnect = useCallback(async () => {
     if (!activeSessionId) return
-    await window.portico.disconnect(activeSessionId)
-    patchUi(activeSessionId, {
-      connInfo: null,
-      connState: 'disconnected',
-      provider: null,
-      portForwards: [],
-      everLive: false
+    const id = activeSessionId
+    await window.portico.disconnect(id)
+    setById((prev) => {
+      if (!prev[id]) return prev
+      return { ...prev, [id]: { ...prev[id], connInfo: null, connState: 'disconnected', provider: null, portForwards: [], everLive: false } }
     })
-  }, [activeSessionId, patchUi])
+  }, [activeSessionId])
 
   const cancelReconnect = useCallback(async () => {
     if (!activeSessionId) return
-    await window.portico.cancelReconnect(activeSessionId)
-    patchUi(activeSessionId, {
-      connInfo: null,
-      connState: 'disconnected',
-      provider: null,
-      portForwards: [],
-      reconnectInfo: null,
-      everLive: false
+    const id = activeSessionId
+    await window.portico.cancelReconnect(id)
+    setById((prev) => {
+      if (!prev[id]) return prev
+      return { ...prev, [id]: { ...prev[id], connInfo: null, connState: 'disconnected', provider: null, portForwards: [], reconnectInfo: null, everLive: false } }
     })
-  }, [activeSessionId, patchUi])
+  }, [activeSessionId])
 
   const setProvider = useCallback(
     async (p: ProviderId) => {
       if (!activeSessionId) return
+      providerChangeFromUser.current = true
       const r = await window.portico.setProvider(activeSessionId, p)
-      if (r.ok) patchUi(activeSessionId, { provider: r.value })
+      if (r.ok) {
+        patchUi(activeSessionId, { provider: r.value })
+        setProviderFlash(null)
+      } else {
+        providerChangeFromUser.current = false
+      }
     },
     [activeSessionId, patchUi]
   )
@@ -686,7 +727,7 @@ function AppInner({
         setCommitting(false)
       }
     },
-    [activeSessionId, appSettings.defaultPastePrompt, pushStatus, t, refreshShelf]
+    [activeSessionId, pushStatus, t, refreshShelf]
   )
 
   const pasteImage = stageClipboard
@@ -757,15 +798,25 @@ function AppInner({
   }, [activeSessionId, patchUi])
 
   useEffect(() => {
+    const isFileDrag = (e: DragEvent) =>
+      [...(e.dataTransfer?.types ?? [])].includes('Files')
+
     const onDragOver = (e: DragEvent) => {
+      // Ignore internal session-rail reorders (custom MIME, no Files).
+      if (!isFileDrag(e)) return
       if (connState !== 'connected') return
-      if (![...e.dataTransfer?.types ?? []].includes('Files')) return
       e.preventDefault()
+      e.dataTransfer!.dropEffect = 'copy'
       setDragOver(true)
     }
-    const onDragLeave = () => setDragOver(false)
+    const onDragLeave = (e: DragEvent) => {
+      // dragleave bubbles; only clear when leaving the window.
+      if (e.relatedTarget != null) return
+      setDragOver(false)
+    }
     const onDrop = (e: DragEvent) => {
       setDragOver(false)
+      if (!isFileDrag(e)) return
       if (connState !== 'connected') return
       e.preventDefault()
       const files = [...(e.dataTransfer?.files ?? [])]
@@ -783,13 +834,23 @@ function AppInner({
       }
       void beginFileUpload(paths.length === 1 ? paths[0]! : paths)
     }
+    // Block browser default for non-file drags so we don't flash "copy" UI.
+    const onDragStart = (e: DragEvent) => {
+      const t = e.target as HTMLElement | null
+      if (t?.closest?.('.session-rail-grip')) return
+      // Allow native file drops only; kill text/selection drags.
+      if (e.dataTransfer?.types?.includes('Files')) return
+      e.preventDefault()
+    }
     window.addEventListener('dragover', onDragOver)
     window.addEventListener('dragleave', onDragLeave)
     window.addEventListener('drop', onDrop)
+    window.addEventListener('dragstart', onDragStart, true)
     return () => {
       window.removeEventListener('dragover', onDragOver)
       window.removeEventListener('dragleave', onDragLeave)
       window.removeEventListener('drop', onDrop)
+      window.removeEventListener('dragstart', onDragStart, true)
     }
   }, [connState, pushStatus, beginFileUpload, t])
 
@@ -957,12 +1018,14 @@ function AppInner({
         enabled: connState === 'connected' && !!activeSessionId,
         run: async () => {
           if (!activeSessionId) return
+          // Treat as auto path so the pill flashes (not a floating toast).
+          providerChangeFromUser.current = false
           const r = await window.portico.detectProvider(activeSessionId)
           if (!r.ok) {
             pushStatus({ level: 'error', message: r.error.message, ttlMs: 6000 })
             return
           }
-          pushStatus({ level: 'info', message: `Provider set to ${r.value}`, ttlMs: 3000 })
+          flashProviderPill(r.value)
         }
       },
       {
@@ -1081,6 +1144,7 @@ function AppInner({
       commitStaged,
       committing,
       shelf,
+      flashProviderPill,
       clearRemoteCache,
       checkForUpdates,
       installUpdate,
@@ -1130,6 +1194,7 @@ function AppInner({
         connState={connState}
         connInfo={connInfo}
         provider={session?.provider ?? 'shell'}
+        providerFlash={providerFlash}
         onProvider={setProvider}
         onDisconnect={disconnect}
         onOpenPalette={() => setPaletteOpen(true)}
@@ -1174,36 +1239,57 @@ function AppInner({
           {!showForm && (
             <div className="term-toolbar">
               {appSettings.enableImageBridge && (
-                <button
-                  type="button"
-                  className="btn ghost"
-                  style={{ fontSize: 12, padding: '2px 10px' }}
-                  disabled={connState !== 'connected'}
-                  onClick={() => void pasteImage()}
-                  title={t('palette.pasteImageHint')}
-                >
-                  <span className="kbd">⌘⇧V</span> {t('toolbar.pasteImage')}
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="btn ghost term-toolbar-btn"
+                    disabled={connState !== 'connected'}
+                    onClick={() => void pasteImage()}
+                    title={t('palette.pasteImageHint')}
+                  >
+                    <span className="kbd">⌘⇧V</span> {t('toolbar.pasteImage')}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn ghost term-toolbar-btn"
+                    disabled={connState !== 'connected'}
+                    onClick={() => void pickImageFile()}
+                    title={t('palette.uploadFileHint')}
+                  >
+                    {t('toolbar.file')}
+                  </button>
+                </>
               )}
-              <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>
-                {appSettings.terminalOnly
-                  ? t('toolbar.terminalOnlyFind')
-                  : connState === 'connected'
-                    ? t('toolbar.orFileDropFind')
-                    : t('toolbar.unavailableReconnect')}
-              </span>
-              <span style={{ flex: 1 }} />
-              <span style={{ color: 'var(--text-dim)', fontSize: 12 }}>
-                {t('toolbar.provider')}{' '}
-                <strong style={{ textTransform: 'capitalize', color: 'var(--text)' }}>
-                  {session?.provider ?? 'shell'}
-                </strong>
-                {session?.provider !== 'shell' ? t('toolbar.interactiveRepl') : ''}
-              </span>
               <button
                 type="button"
-                className="btn ghost icon-btn"
-                style={{ fontSize: 12, padding: '2px 8px' }}
+                className="btn ghost term-toolbar-btn"
+                onClick={() => setFindNonce((n) => n + 1)}
+                title={t('toolbar.findHint')}
+              >
+                <span className="kbd">⌘F</span> {t('toolbar.find')}
+              </button>
+              <span className="term-toolbar-spacer" />
+              {appSettings.enableImageBridge &&
+                connState === 'connected' &&
+                shelf.filter((i) => i.status === 'staged').length > 0 && (
+                  <button
+                    type="button"
+                    className="btn ghost term-toolbar-btn term-toolbar-staged"
+                    onClick={() => {
+                      if (!isToolSidebarVisible(appSettings)) {
+                        updateAppSettings({ ...appSettings, showToolSidebar: true })
+                      }
+                    }}
+                    title={t('toolbar.stagedHint')}
+                  >
+                    {t('toolbar.stagedCount', {
+                      n: shelf.filter((i) => i.status === 'staged').length
+                    })}
+                  </button>
+                )}
+              <button
+                type="button"
+                className="btn ghost icon-btn term-toolbar-btn"
                 onClick={() => openSettings('terminal')}
                 title={t('palette.terminalSettingsHint')}
                 aria-label={t('palette.terminalSettings')}
@@ -1222,6 +1308,7 @@ function AppInner({
                 connState={byId[id]?.connState ?? 'disconnected'}
                 settings={termSettings}
                 onPasteImage={() => void pasteImage()}
+                findNonce={!showForm && id === activeSessionId ? findNonce : 0}
               />
             ))}
           </div>
@@ -1303,6 +1390,8 @@ interface TopBarProps {
   connState: ConnectionState
   connInfo: ConnInfo
   provider: ProviderId
+  /** When set, that pill shows a brief auto-detect flash. */
+  providerFlash: ProviderId | null
   onProvider: (p: ProviderId) => void
   onDisconnect: () => void
   onOpenPalette: () => void
@@ -1315,6 +1404,7 @@ function TopBar({
   connState,
   connInfo,
   provider,
+  providerFlash,
   onProvider,
   onDisconnect,
   onOpenPalette,
@@ -1372,15 +1462,32 @@ function TopBar({
       <div className="spacer" />
       <div className="actions">
         {isActive && (
-          <div className="provider-pills" title={t('toolbar.provider')}>
+          <div
+            className="provider-pills"
+            title={
+              providerFlash
+                ? t('toolbar.providerAutoDetected', { name: providerFlash })
+                : t('toolbar.provider')
+            }
+          >
             {(['claude', 'codex', 'shell'] as ProviderId[]).map((p) => (
               <button
                 key={p}
                 type="button"
-                className={provider === p ? 'active' : ''}
+                className={[
+                  provider === p ? 'active' : '',
+                  providerFlash === p ? 'just-detected' : ''
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
                 onClick={() => onProvider(p)}
               >
                 {p}
+                {providerFlash === p ? (
+                  <span className="provider-auto-badge" aria-hidden>
+                    {t('toolbar.providerAutoBadge')}
+                  </span>
+                ) : null}
               </button>
             ))}
           </div>

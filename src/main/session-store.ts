@@ -5,6 +5,7 @@
  * or key passphrases — only host/user/port/alias/key path/agent + tmux name.
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
+import { writeFile, mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { SessionId, SessionKind } from '@shared/types.js'
 
@@ -67,7 +68,19 @@ export function loadSessionSnapshot(userData: string): SessionSnapshot {
   }
 }
 
-export function saveSessionSnapshot(userData: string, snap: SessionSnapshot): void {
+export async function saveSessionSnapshot(userData: string, snap: SessionSnapshot): Promise<void> {
+  const path = snapshotPath(userData)
+  try {
+    await mkdir(dirname(path), { recursive: true })
+    const normalized = normalizeSnapshot(snap)
+    await writeFile(path, JSON.stringify(normalized, null, 2), 'utf8')
+  } catch {
+    /* disk full / permissions — ignore */
+  }
+}
+
+/** Synchronous variant for process exit only. */
+export function saveSessionSnapshotSync(userData: string, snap: SessionSnapshot): void {
   const path = snapshotPath(userData)
   try {
     const dir = dirname(path)

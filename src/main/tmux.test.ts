@@ -5,7 +5,9 @@ import {
   buildEnterShellCommand,
   buildAttachCommand,
   normalizeTmuxPrefs,
-  shQuote
+  shQuote,
+  parseTmuxSessionFromOutput,
+  inferTmuxSessionFromShellLine
 } from './tmux.js'
 
 describe('sanitizeSessionName', () => {
@@ -63,5 +65,35 @@ describe('buildEnableClipboardCommand', () => {
   it('sets set-clipboard on', async () => {
     const { buildEnableClipboardCommand } = await import('./tmux.js')
     expect(buildEnableClipboardCommand()).toContain('set-clipboard on')
+  })
+})
+
+describe('parseTmuxSessionFromOutput', () => {
+  it('reads status-left style [session] N:window', () => {
+    expect(
+      parseTmuxSessionFromOutput([
+        'some chat [optional] text',
+        '[claude2] 0:claude* 1:bash-                          "host" 17:21 10-Jul-26'
+      ])
+    ).toBe('claude2')
+  })
+
+  it('ignores bracketed text without window index', () => {
+    expect(parseTmuxSessionFromOutput(['see [optional] note and [issue]'])).toBeNull()
+  })
+
+  it('strips ANSI color before matching', () => {
+    expect(
+      parseTmuxSessionFromOutput(['\x1b[42m\x1b[30m[portico] 0:zsh*\x1b[0m'])
+    ).toBe('portico')
+  })
+})
+
+describe('inferTmuxSessionFromShellLine', () => {
+  it('parses attach / new variants', () => {
+    expect(inferTmuxSessionFromShellLine('tmux attach -t claude2')).toBe('claude2')
+    expect(inferTmuxSessionFromShellLine('tmux a -t work')).toBe('work')
+    expect(inferTmuxSessionFromShellLine('tmux new -s mysess')).toBe('mysess')
+    expect(inferTmuxSessionFromShellLine('ls -la')).toBeNull()
   })
 })

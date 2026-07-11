@@ -18,11 +18,13 @@
  * first matching block wins, per-key first value wins, and `*`/`?` globbing
  * is honored on Host tokens.
  *
+ * All filesystem access is async so it never blocks the Electron main event loop.
+ *
  * Failure model mirrors `host-key.ts`: read/parse errors are logged as warns
  * and yield an empty result, never a throw — a missing or malformed config
  * must not block manual host entry.
  */
-import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
+import { readFile, readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { getLogger } from './logger.js'
@@ -168,52 +170,48 @@ function isGlob(pattern: string): boolean {
  * `MAX_INCLUDE_DEPTH` to defeat include cycles. Read failures are logged and
  * skipped — the parse always returns a usable (possibly empty) config.
  */
-export function loadSshConfig(sshDir = join(homedir(), '.ssh')): SshConfig {
+export async function loadSshConfig(sshDir = join(homedir(), '.ssh')): Promise<SshConfig> {
   const merged: SshConfig = []
   const seen = new Set<string>()
-  loadFile(join(sshDir, 'config'), sshDir, 0, merged, seen)
+  await loadFile(join(sshDir, 'config'), sshDir, 0, merged, seen)
   return merged
 }
 
-function loadFile(
+async function loadFile(
   file: string,
   sshDir: string,
   depth: number,
   into: SshConfig,
   seen: Set<string>
-): void {
+): Promise<void> {
   if (depth > MAX_INCLUDE_DEPTH) {
     log.warn('ssh-config', 'include recursion cap reached, stopping', { file, depth })
     return
   }
   if (seen.has(file)) {
-    // Defense against include cycles; OpenSSH itself does the same.
     return
   }
   seen.add(file)
-  if (!existsSync(file)) return
 
   let content: string
   try {
-    content = readFileSync(file, 'utf8')
+    content = await readFile(file, 'utf8')
   } catch (e) {
+    const code = (e as NodeJS.ErrnoException)?.code
+    if (code === 'ENOENT') return
     log.warn('ssh-config', 'failed to read config file', { file, err: e as Error })
     return
   }
 
-  // Walk tokens in order so `Include` expands *inline* at its lexical position
-  // (OpenSSH semantics). Appending includes after the whole file would invert
-  // first-match-wins relative to a trailing `Host *` defaults block.
   let cur: SshHostBlock | null = null
   for (const { keyword, args } of tokenize(content)) {
     if (keyword === 'include') {
-      // Include closes the current host context for subsequent directives in
-      // this file; OpenSSH re-enters Host blocks only on a new `Host` line.
       cur = null
       const spec = args.join(' ')
       if (!spec) continue
-      for (const resolved of resolveInclude(spec, sshDir)) {
-        loadFile(resolved, sshDir, depth + 1, into, seen)
+      const resolved = await resolveInclude(spec, sshDir)
+      for (const r of resolved) {
+        await loadFile(r, sshDir, depth + 1, into, seen)
       }
       continue
     }
@@ -228,42 +226,46 @@ function loadFile(
 }
 
 /** Expand an `Include` spec into concrete file paths (absolute). */
-function resolveInclude(spec: string, sshDir: string): string[] {
-  // OpenSSH allows whitespace-separated lists in a single Include.
-  return spec
-    .split(/\s+/)
-    .filter(Boolean)
-    .flatMap((tok) => {
-      const abs = tok.startsWith('/') ? tok : join(sshDir, tok)
-      // Glob expand directory wildcards (e.g. config.d/*). For patterns that
-      // don't contain metacharacters, just return the literal path and let
-      // the reader's existsSync check handle existence.
-      if (!/[.*?[\]{}]/.test(tok)) return [abs]
-      return globFiles(abs)
-    })
+async function resolveInclude(spec: string, sshDir: string): Promise<string[]> {
+  const tokens = spec.split(/\s+/).filter(Boolean)
+  const out: string[] = []
+  for (const tok of tokens) {
+    const abs = tok.startsWith('/') ? tok : join(sshDir, tok)
+    if (!/[.*?[\]{}]/.test(tok)) {
+      out.push(abs)
+    } else {
+      out.push(...(await globFiles(abs)))
+    }
+  }
+  return out
 }
 
 /** Expand a glob path to existing files (not directories). */
-function globFiles(glob: string): string[] {
+async function globFiles(glob: string): Promise<string[]> {
   try {
-    // Lightweight glob: node:fs has no built-in glob, so we implement a
-    // minimal split-and-match against directory entries. Only non-recursive
-    // patterns (no **) are supported, which covers OpenSSH usage.
     const dirIdx = glob.lastIndexOf('/')
     if (dirIdx === -1) return []
     const dir = glob.slice(0, dirIdx)
     const pat = glob.slice(dirIdx + 1)
-    if (!existsSync(dir)) return []
-    return readdirSync(dir)
+    let entries: string[]
+    try {
+      entries = await readdir(dir)
+    } catch {
+      return []
+    }
+    const matched = entries
       .filter((name: string) => globMatch(pat, name))
       .map((name: string) => join(dir, name))
-      .filter((f: string) => {
-        try {
-          return statSync(f).isFile()
-        } catch {
-          return false
-        }
-      })
+    const files: string[] = []
+    for (const f of matched) {
+      try {
+        const s = await stat(f)
+        if (s.isFile()) files.push(f)
+      } catch {
+        /* skip */
+      }
+    }
+    return files
   } catch {
     return []
   }
@@ -276,14 +278,15 @@ function globFiles(glob: string): string[] {
  * first block whose Host token matches supplies HostName/User/Port/IdentityFile,
  * but a later matching block may fill in keys the first one left unset.
  */
-export function resolveAlias(alias: string, config: SshConfig = loadSshConfig()): ResolvedSshTarget {
+export async function resolveAlias(alias: string, config?: SshConfig): Promise<ResolvedSshTarget> {
+  const cfg = config ?? await loadSshConfig()
   let host: string | undefined
   let user: string | undefined
   let port: number | undefined
   let identityFile: string | undefined
   let matched = false
 
-  for (const block of config) {
+  for (const block of cfg) {
     if (!block.patterns.some((p) => globMatch(p, alias))) continue
     matched = true
     if (host === undefined && block.hostName !== undefined) host = block.hostName
@@ -292,8 +295,6 @@ export function resolveAlias(alias: string, config: SshConfig = loadSshConfig())
     if (identityFile === undefined && block.identityFile !== undefined) {
       identityFile = block.identityFile
     }
-    // OpenSSH keeps walking subsequent blocks to fill remaining unset keys,
-    // so we don't break here.
   }
 
   return {
@@ -313,10 +314,11 @@ export function resolveAlias(alias: string, config: SshConfig = loadSshConfig())
  * are useless as picker entries. Each is resolved to its best-known HostName
  * for the secondary line.
  */
-export function listHostAliases(config: SshConfig = loadSshConfig()): SshHostAlias[] {
+export async function listHostAliases(config?: SshConfig): Promise<SshHostAlias[]> {
+  const cfg = config ?? await loadSshConfig()
   const out: SshHostAlias[] = []
   const seen = new Set<string>()
-  for (const block of config) {
+  for (const block of cfg) {
     for (const p of block.patterns) {
       if (isGlob(p)) continue
       if (seen.has(p)) continue

@@ -144,3 +144,57 @@ export function buildNewSessionCommand(sessionName: string): string {
     `command -v tmux >/dev/null 2>&1 && [ -z "\${TMUX-}" ] && tmux new -s ${name}`
   )
 }
+
+/** Strip CSI / OSC-ish ANSI so status bars with color still parse. */
+function stripAnsi(s: string): string {
+  return s
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+}
+
+/**
+ * Infer the active tmux session from recent terminal scrollback.
+ *
+ * Matches common status-left styles like `[claude2] 0:bash*` / `[portico] 1:claude`.
+ * Requires `N:windowname` after the bracket so chat text like `[optional]` does not match.
+ */
+export function parseTmuxSessionFromOutput(lines: string[]): string | null {
+  // [session] 0:window  or  [session] 0:window* 1:other-
+  const statusRe = /\[([a-zA-Z0-9_-]{1,64})\]\s+\d+:[^\s\]]+/
+  const start = Math.max(0, lines.length - 50)
+  for (let i = lines.length - 1; i >= start; i--) {
+    const line = stripAnsi(lines[i] ?? '')
+    // Prefer the rightmost match on the line (status bar is often at the end).
+    let found: string | null = null
+    const re = new RegExp(statusRe.source, 'g')
+    let m: RegExpExecArray | null
+    while ((m = re.exec(line)) !== null) {
+      found = m[1]
+    }
+    if (found) return sanitizeSessionName(found)
+  }
+  return null
+}
+
+/**
+ * Infer a tmux session name from a completed shell command line the user typed.
+ * Handles attach / new variants; ignores unrelated commands.
+ */
+export function inferTmuxSessionFromShellLine(line: string): string | null {
+  const s = line.trim()
+  if (!s || s.startsWith('#') || !/^tmux\b/.test(s)) return null
+
+  const tFlag = s.match(/(?:^|\s)-t\s*=?\s*["']?([a-zA-Z0-9_-]+)/)
+  const sFlag = s.match(/(?:^|\s)-s\s*=?\s*["']?([a-zA-Z0-9_-]+)/)
+
+  // attach / a / at / switch-client → -t name
+  if (/\b(?:attach(?:-session)?|a|at|switch-client)\b/.test(s) && tFlag?.[1]) {
+    return sanitizeSessionName(tFlag[1])
+  }
+  // new / new-session → -s name (some people use -t)
+  if (/\bnew(?:-session)?\b/.test(s)) {
+    const name = sFlag?.[1] ?? tFlag?.[1]
+    if (name) return sanitizeSessionName(name)
+  }
+  return null
+}

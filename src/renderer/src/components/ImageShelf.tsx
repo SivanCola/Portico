@@ -190,7 +190,7 @@ export function ImageShelf({
             <div className="actions">
               {item.status === 'failed' ? (
                 <button className="btn" onClick={() => onRetry(item)} disabled={!enabled}>
-                  Retry
+                  {t('common.retry')}
                 </button>
               ) : item.status === 'staged' ? (
                 <button className="btn ghost" onClick={() => onRemove(item)} title={t('shelf.removeStaged')}>

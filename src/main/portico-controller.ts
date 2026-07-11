@@ -10,10 +10,15 @@ import {
   canAutoConnectSsh,
   loadSessionSnapshot,
   saveSessionSnapshot,
+  saveSessionSnapshotSync,
   targetToPersisted,
   type PersistedSession,
   type SessionSnapshot
 } from './session-store.js'
+import {
+  composeSessionTitle,
+  parseClaudeWorkContext
+} from './session-title.js'
 import type {
   CommitStagedArgs,
   PasteImageArgs,
@@ -54,8 +59,10 @@ import {
   buildInTmuxCommand,
   buildListSessionsCommand,
   buildNewSessionCommand,
+  inferTmuxSessionFromShellLine,
   normalizeTmuxPrefs,
   parseListSessions,
+  parseTmuxSessionFromOutput,
   type TmuxPrefs,
   type TmuxSessionInfo
 } from './tmux.js'
@@ -121,11 +128,16 @@ class SessionHandle {
   private lastTarget: SshTarget | null = null
   /** Last tmux session this tab entered (remote name). */
   preferredTmuxSession: string | null = null
+  /** Short Claude/agent work context (worktree etc.) for auto-title. */
+  private workContext: string | null = null
   /**
    * Whether launch should auto-reconnect this tab.
    * Set from disk snapshot / on successful connect; cleared on intentional disconnect.
    */
   wantsAutoConnect = false
+  /** Buffer typed shell lines so we can detect `tmux attach -t …`. */
+  private inputLineBuf = ''
+  private lastTmuxProbeAt = 0
   private localShell = ''
   private provider: ProviderId = 'shell'
   private interactive = true
@@ -337,7 +349,7 @@ class SessionHandle {
       this.local = session
       this.kind = 'local'
       this.localShell = session.shellName()
-      if (!this.titleUserSet) this.title = this.localShell || 'Local'
+      this.refreshAutoTitle()
       this.closeHandled = false
       this.osc52.reset()
       this.interactive = true
@@ -423,7 +435,8 @@ class SessionHandle {
       this.kind = 'ssh'
       this.target = target
       this.lastTarget = { ...target }
-      if (!this.titleUserSet) this.title = defaultTitle(target)
+      // Keep preferredTmuxSession from restore; only seed host title when empty.
+      this.refreshAutoTitle()
       this.closeHandled = false
       this.osc52.reset()
 
@@ -472,6 +485,8 @@ class SessionHandle {
   }
 
   async disconnect(): Promise<Result<true>> {
+    // Snapshot tmux name from scrollback before tearing down the PTY.
+    this.refreshTmuxSessionFromOutput()
     this.lifecycleEpoch++
     this.reconnectCancelled = true
     if (this.reconnectTimer) {
@@ -526,9 +541,99 @@ class SessionHandle {
     try {
       if (this.local?.isConnected()) this.local.write(data)
       else this.ssh?.write(data)
+      this.trackShellInputForTmux(data)
     } catch (e) {
       this.host.onStatus('error', (e as Error).message, undefined, this.id)
     }
+  }
+
+  /**
+   * Track complete shell lines and capture `tmux attach/new -t/-s name`.
+   * Also used so restore can re-enter sessions the user joined manually.
+   */
+  private trackShellInputForTmux(data: string): void {
+    if (this.kind !== 'ssh') return
+    for (const ch of data) {
+      if (ch === '\r' || ch === '\n') {
+        const line = this.inputLineBuf
+        this.inputLineBuf = ''
+        const name = inferTmuxSessionFromShellLine(line)
+        if (name) this.rememberTmuxSession(name)
+      } else if (ch === '\x7f' || ch === '\b') {
+        this.inputLineBuf = this.inputLineBuf.slice(0, -1)
+      } else if (ch === '\u0015') {
+        // Ctrl-U clear line
+        this.inputLineBuf = ''
+      } else if (ch >= ' ' || ch === '\t') {
+        if (this.inputLineBuf.length < 240) this.inputLineBuf += ch
+      }
+    }
+  }
+
+  /** Persist preferred tmux name and refresh auto-title. */
+  private rememberTmuxSession(name: string): void {
+    const n = name.trim()
+    if (!n) return
+    if (this.preferredTmuxSession === n) {
+      this.refreshAutoTitle()
+      return
+    }
+    this.preferredTmuxSession = n
+    log.info('controller', 'remembered tmux session', { sessionId: this.id, tmux: n })
+    this.refreshAutoTitle()
+  }
+
+  /**
+   * Rebuild tab title from host + tmux + Claude work context.
+   * No-op after the user has manually renamed the tab (`titleUserSet`).
+   */
+  private refreshAutoTitle(): void {
+    if (this.titleUserSet) return
+    const hostLabel =
+      this.target?.alias || this.lastTarget?.alias || this.target?.host || this.lastTarget?.host
+    const next = composeSessionTitle({
+      kind: this.kind,
+      localShell: this.localShell,
+      hostLabel,
+      tmuxSession: this.preferredTmuxSession,
+      workContext: this.workContext
+    })
+    if (next && next !== this.title) {
+      this.title = next
+      this.host.onSummaryChanged()
+    }
+  }
+
+  /** Scan scrollback for tmux status + Claude work context; throttled. */
+  private maybeProbeTmuxFromOutput(): void {
+    if (this.kind !== 'ssh' || !this.ssh?.isConnected()) return
+    const now = Date.now()
+    if (now - this.lastTmuxProbeAt < 1200) return
+    this.lastTmuxProbeAt = now
+    const lines = this.recentOutputLines()
+    let changed = false
+    const tmux = parseTmuxSessionFromOutput(lines)
+    if (tmux && tmux !== this.preferredTmuxSession) {
+      this.preferredTmuxSession = tmux
+      changed = true
+      log.info('controller', 'probed tmux session', { sessionId: this.id, tmux })
+    }
+    const work = parseClaudeWorkContext(lines)
+    if (work && work !== this.workContext) {
+      this.workContext = work
+      changed = true
+      log.info('controller', 'probed work context', { sessionId: this.id, work })
+    }
+    if (changed || !this.titleUserSet) {
+      this.refreshAutoTitle()
+    }
+  }
+
+  /** Force a probe before disk persist / disconnect. */
+  refreshTmuxSessionFromOutput(): void {
+    if (this.kind !== 'ssh') return
+    this.lastTmuxProbeAt = 0
+    this.maybeProbeTmuxFromOutput()
   }
 
   resize(cols: number, rows: number): void {
@@ -784,23 +889,29 @@ class SessionHandle {
     }
 
     if (this.host.getFlags().providerDetect && !this.providerManual) {
-      this.maybeAutoDetectProvider()
+      void this.maybeAutoDetectProvider()
     }
+    // Learn which tmux session this tab is in (status bar / scrollback).
+    this.maybeProbeTmuxFromOutput()
     if (!text) return
     this.host.onOutput(this.id, text)
   }
 
+  private providerDetectInFlight = false
+
   /**
-   * Continuous provider detection (throttled).
+   * Continuous provider detection (throttled, single-flight).
    * Manual UI selection sets providerManual and skips this path.
    * Leaving Claude/Codex (process gone + shell prompt) returns to shell.
    */
-  private maybeAutoDetectProvider(): void {
+  private async maybeAutoDetectProvider(): Promise<void> {
     const now = Date.now()
     if (now - this.lastProviderDetectAt < 400) return
+    if (this.providerDetectInFlight) return
     this.lastProviderDetectAt = now
+    this.providerDetectInFlight = true
     try {
-      const processHint = this.probeProcessHint(now)
+      const processHint = await this.probeProcessHint(now)
       const detected = detectProvider({
         recentOutput: this.recentOutputLines(),
         currentLine: '',
@@ -811,18 +922,22 @@ class SessionHandle {
       this.provider = detected
       this.pushProviderSession()
       this.host.onSummaryChanged()
-      if (detected === 'shell' && (prev === 'claude' || prev === 'codex')) {
-        this.host.onStatus('info', 'Provider: shell', 2000, this.id)
-      } else if (detected !== 'shell') {
-        this.host.onStatus('info', `Detected ${detected}.`, 2500, this.id)
+      if (detected !== prev) {
+        log.info('controller', 'provider auto-detected', {
+          sessionId: this.id,
+          from: prev,
+          to: detected
+        })
       }
     } catch (e) {
       log.warn('controller', 'provider detect failed (ignored)', { err: e as Error })
+    } finally {
+      this.providerDetectInFlight = false
     }
   }
 
   /** Local PTY: walk process tree for claude/codex (cached ~800ms). */
-  private probeProcessHint(now: number): 'claude' | 'codex' | 'none' | undefined {
+  private async probeProcessHint(now: number): Promise<'claude' | 'codex' | 'none' | undefined> {
     if (!this.local?.isConnected()) return undefined
     if (now - this.lastProcessProbeAt < 800 && this.cachedProcessHint !== undefined) {
       return this.cachedProcessHint
@@ -834,7 +949,7 @@ class SessionHandle {
       return 'none'
     }
     try {
-      const hit = findAiChildProcess(pid)
+      const hit = await findAiChildProcess(pid)
       this.cachedProcessHint = hit ?? 'none'
     } catch {
       this.cachedProcessHint = undefined
@@ -845,17 +960,36 @@ class SessionHandle {
   private async maybeEnterTmux(reason: 'connect' | 'reconnect'): Promise<void> {
     try {
       // Prefer the last tmux this tab used (restore / re-attach).
+      // Do NOT fall back to global prefs when a preferred name exists but attach
+      // fails — prefs are often "off", which left users on a bare login shell.
       let r: Result<{ action: string; session: string }>
       if (this.preferredTmuxSession) {
+        // Give the login shell a moment to settle before injecting attach.
+        const delayMs = reason === 'connect' ? 600 : 400
+        await new Promise((res) => setTimeout(res, delayMs))
         r = await this.enterTmux({ attachOnly: this.preferredTmuxSession })
-        if (!r.ok && r.error.code !== 'TMUX_NESTED') {
-          // Session gone — fall back to global prefs.
-          log.info('controller', 'preferred tmux attach failed; falling back to prefs', {
+        if (!r.ok && r.error.code === 'TMUX_NESTED') {
+          // Already inside some tmux (rare on fresh SSH) — keep preferred name.
+          await this.maybeConfigureRemoteClipboard()
+          return
+        }
+        if (!r.ok) {
+          log.warn('controller', 'preferred tmux attach failed', {
             sessionId: this.id,
             tmux: this.preferredTmuxSession,
             err: r.error.message
           })
-          r = await this.enterTmux()
+          this.host.onStatus(
+            'warn',
+            `Could not attach tmux “${this.preferredTmuxSession}”: ${r.error.message}`,
+            7000,
+            this.id
+          )
+          // One retry after shell is fully up (MOTD / profile finished).
+          await new Promise((res) => setTimeout(res, 1200))
+          if (this.ssh?.isConnected() && this.preferredTmuxSession) {
+            r = await this.enterTmux({ attachOnly: this.preferredTmuxSession })
+          }
         }
       } else {
         r = await this.enterTmux()
@@ -878,13 +1012,12 @@ class SessionHandle {
         await this.maybeConfigureRemoteClipboard()
         return
       }
-      this.preferredTmuxSession = r.value.session
+      this.rememberTmuxSession(r.value.session)
       log.info('controller', `tmux enter (${reason})`, {
         sessionId: this.id,
         action: r.value.action,
         session: r.value.session
       })
-      this.host.onSummaryChanged()
       await this.maybeConfigureRemoteClipboard()
     } catch (e) {
       log.warn('controller', 'tmux enter failed (ignored)', { err: e as Error })
@@ -966,8 +1099,7 @@ class SessionHandle {
       if (!this.ssh?.isConnected()) return err('NOT_CONNECTED', 'Session closed before tmux enter.')
 
       this.ssh.write(`${line}\n`)
-      this.preferredTmuxSession = session
-      this.host.onSummaryChanged()
+      this.rememberTmuxSession(session)
       this.host.onStatus(
         'info',
         action === 'new'
@@ -1242,12 +1374,11 @@ class SessionHandle {
     return ok(snap)
   }
 
-  detectProvider(): Result<ProviderId> {
-    // Palette "re-detect": clear manual lock and re-run heuristics + process probe.
+  async detectProvider(): Promise<Result<ProviderId>> {
     this.providerManual = false
     this.cachedProcessHint = undefined
     this.lastProcessProbeAt = 0
-    const processHint = this.probeProcessHint(Date.now())
+    const processHint = await this.probeProcessHint(Date.now())
     const detected = detectProvider({
       recentOutput: this.recentOutputLines(),
       currentLine: '',
@@ -1561,30 +1692,32 @@ export class PorticoController {
     return ok(true)
   }
 
+  private persistInFlight = false
+  private persistDirty = false
+
   private schedulePersist(immediate = false): void {
     if (this.persistTimer) clearTimeout(this.persistTimer)
     const run = () => {
       this.persistTimer = null
-      this.persistNow()
+      void this.persistAsync()
     }
     if (immediate) run()
     else this.persistTimer = setTimeout(run, 400)
   }
 
-  /** Flush tab layout to disk (also call on app quit). */
-  persistNow(): void {
+  private buildSnapshot(): { ud: string; snap: SessionSnapshot } | null {
     const ud = this.userDataPath()
-    if (!ud) return
+    if (!ud) return null
+    for (const h of this.sessions.values()) {
+      h.refreshTmuxSessionFromOutput()
+    }
     const sessions = [...this.sessions.values()]
       .map((h) => h.toPersisted())
-      // Drop pure empty drafts unless they're the only tab.
       .filter((s, _i, arr) => {
         if (s.kind === 'local' || s.kind === 'ssh') return true
         if (s.titleUserSet) return true
-        // Keep nothing for blank drafts when other real sessions exist.
         return arr.every((x) => !x.kind)
       })
-    // Force autoConnect true for currently connected sessions that can reconnect.
     const enriched = sessions.map((s) => {
       const h = this.sessions.get(s.id)
       if (!h) return s
@@ -1597,13 +1730,41 @@ export class PorticoController {
       }
       return s
     })
-    const snap: SessionSnapshot = {
-      version: 1,
-      restoreOnLaunch: this.restoreOnLaunch,
-      activeSessionId: this.activeSessionId,
-      sessions: enriched
+    return {
+      ud,
+      snap: {
+        version: 1,
+        restoreOnLaunch: this.restoreOnLaunch,
+        activeSessionId: this.activeSessionId,
+        sessions: enriched
+      }
     }
-    saveSessionSnapshot(ud, snap)
+  }
+
+  private async persistAsync(): Promise<void> {
+    if (this.persistInFlight) {
+      this.persistDirty = true
+      return
+    }
+    this.persistInFlight = true
+    this.persistDirty = false
+    try {
+      const result = this.buildSnapshot()
+      if (result) await saveSessionSnapshot(result.ud, result.snap)
+    } finally {
+      this.persistInFlight = false
+      if (this.persistDirty) {
+        this.persistDirty = false
+        void this.persistAsync()
+      }
+    }
+  }
+
+  /** Synchronous flush for process exit (before-quit). */
+  persistNow(): void {
+    const result = this.buildSnapshot()
+    if (!result) return
+    saveSessionSnapshotSync(result.ud, result.snap)
   }
 
   private hostFns(): HandleHost {
@@ -1869,7 +2030,7 @@ export class PorticoController {
     return r.value.setProvider(provider)
   }
 
-  detectProvider(sessionId: SessionId): Result<ProviderId> {
+  async detectProvider(sessionId: SessionId): Promise<Result<ProviderId>> {
     const r = this.require(sessionId)
     if (!r.ok) return r
     return r.value.detectProvider()

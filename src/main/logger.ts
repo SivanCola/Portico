@@ -12,11 +12,24 @@
  *   - Never logs secrets (passwords / private keys / passphrases).
  *   - The logger itself must never crash the app — every file operation is
  *     wrapped so a logging failure degrades to console-only.
+ *   - All disk I/O is async (buffered writes + async rotation) so logging
+ *     never blocks the Electron main event loop.
  *
  * The formatting helpers (`formatLine`, `shouldLog`, `redactTarget`) are pure
  * and exported so they can be unit-tested without booting Electron.
  */
-import { appendFileSync, renameSync, unlinkSync, statSync, existsSync, mkdirSync } from 'node:fs'
+import {
+  appendFile,
+  rename,
+  unlink,
+  stat,
+  mkdir,
+  appendFileSync,
+  mkdirSync,
+  statSync,
+  unlinkSync,
+  renameSync
+} from 'node:fs'
 import { dirname, join } from 'node:path'
 import { app } from 'electron'
 import { RELEASE_CHANNEL } from '@shared/channel.js'
@@ -102,6 +115,11 @@ export const KEEP_FILES = 3
  */
 export const MAX_TOTAL_DISK_BYTES = MAX_FILE_BYTES * (KEEP_FILES + 1)
 
+/** Async flush interval in ms. */
+const FLUSH_INTERVAL_MS = 100
+/** Force flush when buffer exceeds this many characters. */
+const FLUSH_CHARS = 16_384
+
 // ---- Logger ---------------------------------------------------------------
 
 export interface LoggerOptions {
@@ -117,6 +135,11 @@ export class Logger {
   readonly minLevel: LogLevel
   private readonly filePath: string | null
   private readonly toConsole: boolean
+  private buffer: string[] = []
+  private bufChars = 0
+  private flushTimer: ReturnType<typeof setTimeout> | null = null
+  private flushing = false
+  private rotating = false
 
   constructor(opts: LoggerOptions) {
     this.minLevel = opts.minLevel
@@ -141,6 +164,44 @@ export class Logger {
     this.write('error', tag, message, meta)
   }
 
+  /**
+   * Synchronous final flush for process exit (before-quit).
+   * Only time we touch sync I/O — acceptable since the app is shutting down.
+   */
+  flushSync(): void {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer)
+      this.flushTimer = null
+    }
+    this.flushing = true
+    if (!this.filePath || this.buffer.length === 0) return
+    try {
+      this.rotateSync()
+      appendFileSync(this.filePath, this.buffer.join(''), 'utf8')
+    } catch {
+      /* best effort */
+    }
+    this.buffer = []
+    this.bufChars = 0
+  }
+
+  private rotateSync(): void {
+    if (!this.filePath) return
+    let size: number
+    try {
+      size = statSync(this.filePath).size
+    } catch {
+      return
+    }
+    if (size < MAX_FILE_BYTES) return
+    const oldest = `${this.filePath}.${KEEP_FILES}`
+    try { unlinkSync(oldest) } catch { /* best effort */ }
+    for (let i = KEEP_FILES - 1; i >= 1; i--) {
+      try { renameSync(`${this.filePath}.${i}`, `${this.filePath}.${i + 1}`) } catch { /* best effort */ }
+    }
+    try { renameSync(this.filePath, `${this.filePath}.1`) } catch { /* best effort */ }
+  }
+
   private write(level: LogLevel, tag: string, message: string, meta?: Record<string, unknown>): void {
     if (!shouldLog(level, this.minLevel)) return
     const line = formatLine(level, tag, message, meta)
@@ -149,52 +210,89 @@ export class Logger {
       level === 'error' ? console.error(line) : console.log(line)
     }
     if (this.filePath) {
-      // Every file op is guarded: a logging failure must never propagate.
-      try {
-        this.maybeRotate()
-        appendFileSync(this.filePath, line + '\n', 'utf8')
-      } catch {
-        /* swallow — fall back to whatever console output we already did */
+      this.buffer.push(line + '\n')
+      this.bufChars += line.length + 1
+      if (this.bufChars >= FLUSH_CHARS) {
+        void this.flush()
+      } else if (!this.flushTimer) {
+        this.flushTimer = setTimeout(() => {
+          this.flushTimer = null
+          void this.flush()
+        }, FLUSH_INTERVAL_MS)
       }
     }
   }
 
-  /**
-   * Rotate when the active file exceeds the size cap. Shifts
-   * portico.log -> portico.log.1 -> ... -> portico.log.<KEEP_FILES>, deleting
-   * the oldest. Bounded total size = MAX_TOTAL_DISK_BYTES.
-   */
-  private maybeRotate(): void {
-    if (!this.filePath) return
-    let size: number
-    try {
-      size = statSync(this.filePath).size
-    } catch {
-      return // file doesn't exist yet; nothing to rotate
+  private async flush(): Promise<void> {
+    if (!this.filePath || this.buffer.length === 0 || this.flushing) return
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer)
+      this.flushTimer = null
     }
-    if (size < MAX_FILE_BYTES) return
+    this.flushing = true
+    const data = this.buffer.join('')
+    this.buffer = []
+    this.bufChars = 0
+    try {
+      await this.maybeRotate()
+      await new Promise<void>((resolve) => {
+        appendFile(this.filePath!, data, 'utf8', () => resolve())
+      })
+    } catch {
+      /* swallow — fall back to whatever console output we already did */
+    } finally {
+      this.flushing = false
+      if (this.buffer.length > 0) void this.flush()
+    }
+  }
 
-    // Drop the oldest kept file, then shift each suffix up by one.
-    const oldest = `${this.filePath}.${KEEP_FILES}`
+  private async maybeRotate(): Promise<void> {
+    if (!this.filePath || this.rotating) return
+    this.rotating = true
     try {
-      if (existsSync(oldest)) unlinkSync(oldest)
-    } catch {
-      /* best effort */
-    }
-    for (let i = KEEP_FILES - 1; i >= 1; i--) {
-      const from = `${this.filePath}.${i}`
-      const to = `${this.filePath}.${i + 1}`
+      let size: number
       try {
-        if (existsSync(from)) renameSync(from, to)
+        const s = await new Promise<{ size: number }>((resolve, reject) => {
+          stat(this.filePath!, (err, st) => (err ? reject(err) : resolve(st)))
+        })
+        size = s.size
+      } catch {
+        this.rotating = false
+        return
+      }
+      if (size < MAX_FILE_BYTES) {
+        this.rotating = false
+        return
+      }
+
+      const oldest = `${this.filePath}.${KEEP_FILES}`
+      try {
+        await new Promise<void>((resolve) => {
+          unlink(oldest, () => resolve())
+        })
       } catch {
         /* best effort */
       }
-    }
-    // Finally move the active file to .1.
-    try {
-      renameSync(this.filePath, `${this.filePath}.1`)
-    } catch {
-      /* best effort */
+      for (let i = KEEP_FILES - 1; i >= 1; i--) {
+        const from = `${this.filePath}.${i}`
+        const to = `${this.filePath}.${i + 1}`
+        try {
+          await new Promise<void>((resolve) => {
+            rename(from, to, () => resolve())
+          })
+        } catch {
+          /* best effort */
+        }
+      }
+      try {
+        await new Promise<void>((resolve) => {
+          rename(this.filePath!, `${this.filePath}.1`, () => resolve())
+        })
+      } catch {
+        /* best effort */
+      }
+    } finally {
+      this.rotating = false
     }
   }
 

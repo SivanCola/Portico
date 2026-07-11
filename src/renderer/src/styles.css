@@ -34,6 +34,24 @@ body {
   font-size: 13px;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
+  /* Prevent accidental HTML5 text/image drag looking like a system "copy". */
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+/* Allow real text selection where it matters */
+input,
+textarea,
+.xterm,
+.xterm * {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Grip is the only intentional drag source for session reorder */
+.session-rail-grip {
+  -webkit-user-drag: element;
+  user-select: none;
 }
 
 button {
@@ -242,6 +260,30 @@ html[data-platform='win32'] .topbar {
   background: rgba(68, 147, 248, 0.18);
   color: var(--accent);
 }
+/* Quiet auto-detect feedback — replaces the floating "Detected claude" toast */
+.provider-pills button.just-detected {
+  position: relative;
+  animation: provider-detect-pulse 0.85s ease-out 1;
+  box-shadow: 0 0 0 1px rgba(68, 147, 248, 0.45);
+}
+.provider-pills button .provider-auto-badge {
+  margin-left: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--accent);
+  opacity: 0.9;
+  vertical-align: middle;
+}
+@keyframes provider-detect-pulse {
+  0% {
+    background: rgba(68, 147, 248, 0.42);
+  }
+  100% {
+    background: rgba(68, 147, 248, 0.18);
+  }
+}
 
 /* ---- workspace ---- */
 .workspace {
@@ -317,10 +359,7 @@ html[data-platform='win32'] .topbar {
   border-radius: 6px;
   margin-bottom: 2px;
   position: relative;
-  cursor: grab;
-}
-.session-rail-item:active {
-  cursor: grabbing;
+  cursor: default;
 }
 .session-rail-item.active {
   background: var(--bg-elev-2);
@@ -333,6 +372,43 @@ html[data-platform='win32'] .topbar {
 }
 .session-rail-item.dragging {
   opacity: 0.45;
+}
+.session-rail-row-wrap {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  gap: 0;
+}
+.session-rail-grip {
+  flex-shrink: 0;
+  width: 16px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: -2px;
+  color: var(--text-faint);
+  cursor: grab;
+  border-radius: 4px;
+  user-select: none;
+  opacity: 0.35;
+}
+.session-rail-item:hover .session-rail-grip,
+.session-rail-item.active .session-rail-grip,
+.session-rail-grip:hover {
+  opacity: 1;
+  color: var(--text-dim);
+}
+.session-rail-grip:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.session-rail-grip:active,
+.session-rail-item.dragging .session-rail-grip {
+  cursor: grabbing;
+  opacity: 1;
 }
 .session-rail-item.drop-before::before,
 .session-rail-item.drop-after::after {
@@ -353,20 +429,6 @@ html[data-platform='win32'] .topbar {
 .session-rail-item.drop-after::after {
   bottom: -1px;
 }
-.session-rail-grip {
-  flex-shrink: 0;
-  width: 10px;
-  font-size: 9px;
-  line-height: 1;
-  letter-spacing: -1px;
-  color: var(--text-faint);
-  user-select: none;
-  opacity: 0;
-}
-.session-rail-item:hover .session-rail-grip,
-.session-rail-item.active .session-rail-grip {
-  opacity: 1;
-}
 .session-rail-row {
   flex: 1;
   min-width: 0;
@@ -380,7 +442,7 @@ html[data-platform='win32'] .topbar {
   padding: 8px 6px 8px 4px;
   font-size: 12px;
   border-radius: 6px;
-  cursor: inherit;
+  cursor: pointer;
 }
 .session-rail-row.editing {
   cursor: default;
@@ -656,10 +718,32 @@ html[data-platform='win32'] .topbar {
 .term-toolbar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
+  gap: 4px;
+  height: 32px;
+  padding: 0 8px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-elev);
+  flex-shrink: 0;
+}
+.term-toolbar-btn {
+  font-size: 12px !important;
+  padding: 2px 8px !important;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.term-toolbar-btn .kbd {
+  font-size: 10px;
+  opacity: 0.85;
+}
+.term-toolbar-spacer {
+  flex: 1;
+  min-width: 8px;
+}
+.term-toolbar-staged {
+  color: var(--accent) !important;
+  border-color: rgba(68, 147, 248, 0.35) !important;
 }
 
 /* ---- terminal find bar ---- */

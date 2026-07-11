@@ -22,7 +22,14 @@ export type MessageKey =
   | 'toolbar.terminalOnlyFind'
   | 'toolbar.unavailableReconnect'
   | 'toolbar.provider'
+  | 'toolbar.providerAutoBadge'
+  | 'toolbar.providerAutoDetected'
   | 'toolbar.interactiveRepl'
+  | 'toolbar.file'
+  | 'toolbar.find'
+  | 'toolbar.findHint'
+  | 'toolbar.stagedCount'
+  | 'toolbar.stagedHint'
   | 'reconnect.banner'
   | 'reconnect.pasteDisabled'
   | 'reconnect.cancel'
@@ -213,6 +220,13 @@ export type MessageKey =
   | 'update.upToDate'
   | 'update.error'
   | 'update.restart'
+  | 'palette.placeholder'
+  | 'common.close'
+  | 'common.retry'
+  | 'pf.addBtn'
+  | 'pf.errLocalPort'
+  | 'pf.errRemotePort'
+  | 'pf.errHostRequired'
 
 type Catalog = Record<MessageKey, string>
 
@@ -232,12 +246,19 @@ const en: Catalog = {
   'topbar.toggleToolSidebar': 'Toggle tool sidebar  ·  ⌘\\',
   'topbar.hideSidebar': 'Hide panel',
   'topbar.showSidebar': 'Show panel',
-  'toolbar.pasteImage': 'Stage image(s)',
+  'toolbar.pasteImage': 'Stage',
   'toolbar.orFileDropFind': 'or File… / drop · ⌘F find',
   'toolbar.terminalOnlyFind': 'Terminal only · ⌘F find',
   'toolbar.unavailableReconnect': 'unavailable while reconnecting',
   'toolbar.provider': 'Provider:',
+  'toolbar.providerAutoBadge': 'auto',
+  'toolbar.providerAutoDetected': 'Auto-detected: {name}',
   'toolbar.interactiveRepl': ' · interactive REPL',
+  'toolbar.file': 'File…',
+  'toolbar.find': 'Find',
+  'toolbar.findHint': 'Find in terminal  ·  ⌘F',
+  'toolbar.stagedCount': '{n} staged',
+  'toolbar.stagedHint': 'Open image shelf to review and send (Enter)',
   'reconnect.banner': 'Connection lost. Reconnecting (attempt {attempt}/10)',
   'reconnect.pasteDisabled': 'Paste image disabled until reconnected.',
   'reconnect.cancel': 'Cancel',
@@ -251,8 +272,8 @@ const en: Catalog = {
   'rail.new': 'New session',
   'rail.close': 'Close session',
   'rail.renamePrompt': 'Session title',
-  'rail.renameHint': 'Double-click to rename',
-  'rail.dragHint': 'Drag to reorder',
+  'rail.renameHint': 'Double-click to rename (stops auto-title from tmux/Claude)',
+  'rail.dragHint': 'Drag handle to reorder',
   'rail.unread': 'Unread output',
   'palette.newSession': 'New session',
   'palette.newSessionHint': 'Open a draft connection tab',
@@ -443,7 +464,14 @@ const en: Catalog = {
   'update.ready': 'Update ready',
   'update.upToDate': 'Up to date',
   'update.error': 'Update error',
-  'update.restart': 'Restart now'
+  'update.restart': 'Restart now',
+  'palette.placeholder': 'Type a command…',
+  'common.close': 'Close',
+  'common.retry': 'Retry',
+  'pf.addBtn': 'Add',
+  'pf.errLocalPort': 'Invalid local port',
+  'pf.errRemotePort': 'Invalid remote port',
+  'pf.errHostRequired': 'Remote host required'
 }
 
 const zhCN: Catalog = {
@@ -463,12 +491,19 @@ const zhCN: Catalog = {
   'topbar.toggleToolSidebar': '切换右侧工具栏  ·  ⌘\\',
   'topbar.hideSidebar': '隐藏面板',
   'topbar.showSidebar': '显示面板',
-  'toolbar.pasteImage': '暂存图片',
+  'toolbar.pasteImage': '暂存',
   'toolbar.orFileDropFind': '或 文件… / 拖放 · ⌘F 查找',
   'toolbar.terminalOnlyFind': '仅终端 · ⌘F 查找',
   'toolbar.unavailableReconnect': '重连期间不可用',
   'toolbar.provider': '提供方：',
+  'toolbar.providerAutoBadge': '自动',
+  'toolbar.providerAutoDetected': '已自动识别：{name}',
   'toolbar.interactiveRepl': ' · 交互 REPL',
+  'toolbar.file': '文件…',
+  'toolbar.find': '查找',
+  'toolbar.findHint': '在终端中查找  ·  ⌘F',
+  'toolbar.stagedCount': '待发送 {n}',
+  'toolbar.stagedHint': '打开图片货架查看并发送（回车）',
   'reconnect.banner': '连接已断开。正在重连（第 {attempt}/10 次）',
   'reconnect.pasteDisabled': '重连完成前无法粘贴图片。',
   'reconnect.cancel': '取消',
@@ -482,8 +517,8 @@ const zhCN: Catalog = {
   'rail.new': '新建会话',
   'rail.close': '关闭会话',
   'rail.renamePrompt': '会话标题',
-  'rail.renameHint': '双击重命名',
-  'rail.dragHint': '拖拽调整顺序',
+  'rail.renameHint': '双击重命名（之后不再随 tmux/Claude 自动改名）',
+  'rail.dragHint': '按住左侧把手拖拽排序',
   'rail.unread': '有新输出',
   'palette.newSession': '新建会话',
   'palette.newSessionHint': '打开一个待连接的会话标签',
@@ -673,7 +708,14 @@ const zhCN: Catalog = {
   'update.ready': '更新已就绪',
   'update.upToDate': '已是最新',
   'update.error': '更新出错',
-  'update.restart': '立即重启'
+  'update.restart': '立即重启',
+  'palette.placeholder': '输入命令…',
+  'common.close': '关闭',
+  'common.retry': '重试',
+  'pf.addBtn': '添加',
+  'pf.errLocalPort': '本地端口无效',
+  'pf.errRemotePort': '远端端口无效',
+  'pf.errHostRequired': '请填写远端主机'
 }
 
 const CATALOGS: Record<ResolvedLocale, Catalog> = {
