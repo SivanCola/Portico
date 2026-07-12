@@ -21,6 +21,7 @@ import type {
   UpdateStatus
 } from '@shared/types.js'
 import type { ConnStatePayload, StatusPayload } from '@shared/ipc.js'
+import type { DetectedPort } from '@shared/port-detect.js'
 import { SessionConnectHub } from './components/SessionConnectHub.js'
 import { Terminal } from './components/Terminal.js'
 import { ImageShelf } from './components/ImageShelf.js'
@@ -77,6 +78,7 @@ interface SessionUi {
   provider: ProviderSession | null
   shelf: ShelfItem[]
   portForwards: PortForwardStatus[]
+  detectedPorts: DetectedPort[]
   /** True once the session has been connected at least once (mount Terminal). */
   everLive: boolean
 }
@@ -90,6 +92,7 @@ function emptyUi(partial?: Partial<SessionUi>): SessionUi {
     provider: null,
     shelf: [],
     portForwards: [],
+    detectedPorts: [],
     everLive: false,
     ...partial
   }
@@ -153,6 +156,8 @@ function AppInner({
   const session = activeUi?.provider ?? null
   const shelf = activeUi?.shelf ?? []
   const portForwards = activeUi?.portForwards ?? []
+  const detectedPorts = activeUi?.detectedPorts ?? []
+  const [pfExpandRequest, setPfExpandRequest] = useState(0)
 
   const patchUi = useCallback((id: SessionId, patch: Partial<SessionUi> | ((prev: SessionUi) => SessionUi)) => {
     setById((prev) => {
@@ -422,7 +427,7 @@ function AppInner({
         if (payload.state === 'disconnected') {
           next.connInfo = null
           next.provider = null
-          next.portForwards = []
+          // Port-forward rules are kept (shown as stopped); main pushes the list.
           // Local shell exit or clean disconnect: clear everLive so the
           // connect hub reappears. SSH drops go through reconnecting first,
           // so cur.connState will be 'reconnecting' — keep everLive for those.
@@ -486,6 +491,12 @@ function AppInner({
   useEffect(() => {
     return window.portico.onPortForwardChanged((payload) => {
       patchUi(payload.sessionId, { portForwards: payload.forwards })
+    })
+  }, [patchUi])
+
+  useEffect(() => {
+    return window.portico.onDetectedPortsChanged((payload) => {
+      patchUi(payload.sessionId, { detectedPorts: payload.ports })
     })
   }, [patchUi])
 
@@ -573,7 +584,7 @@ function AppInner({
     await window.portico.disconnect(id)
     setById((prev) => {
       if (!prev[id]) return prev
-      return { ...prev, [id]: { ...prev[id], connInfo: null, connState: 'disconnected', provider: null, portForwards: [], everLive: false } }
+      return { ...prev, [id]: { ...prev[id], connInfo: null, connState: 'disconnected', provider: null, portForwards: [], detectedPorts: [], everLive: false } }
     })
   }, [activeSessionId])
 
@@ -583,7 +594,7 @@ function AppInner({
     await window.portico.cancelReconnect(id)
     setById((prev) => {
       if (!prev[id]) return prev
-      return { ...prev, [id]: { ...prev[id], connInfo: null, connState: 'disconnected', provider: null, portForwards: [], reconnectInfo: null, everLive: false } }
+      return { ...prev, [id]: { ...prev[id], connInfo: null, connState: 'disconnected', provider: null, portForwards: [], detectedPorts: [], reconnectInfo: null, everLive: false } }
     })
   }, [activeSessionId])
 
@@ -1108,6 +1119,44 @@ function AppInner({
         }
       },
       {
+        id: 'add-port-forward',
+        title: t('palette.addPortForward'),
+        hint: t('palette.addPortForwardHint'),
+        enabled: !!activeSessionId && appSettings.enablePortForwards,
+        run: () => {
+          if (!isToolSidebarVisible(appSettings) || !toolSidebarOpen) {
+            // Ensure sidebar is open so the form is visible.
+            setAppSettings((prev) => {
+              const next = normalizeAppSettings({ ...prev, showToolSidebar: true })
+              saveAppSettings(next)
+              void window.portico.setFeatureFlags(toFeatureFlags(next))
+              return next
+            })
+          }
+          setPfExpandRequest((n) => n + 1)
+        }
+      },
+      {
+        id: 'open-port-forward',
+        title: t('palette.openPortForward'),
+        hint: t('palette.openPortForwardHint'),
+        enabled:
+          connState === 'connected' &&
+          !!activeSessionId &&
+          portForwards.some(
+            (f) => f.direction !== 'remote' && f.state === 'listening' && f.enabled
+          ),
+        run: async () => {
+          if (!activeSessionId) return
+          const first = portForwards.find(
+            (f) => f.direction !== 'remote' && f.state === 'listening' && f.enabled
+          )
+          if (!first) return
+          const r = await window.portico.openPortForward(activeSessionId, first.id)
+          if (!r.ok) pushStatus({ level: 'warn', message: r.error.message, ttlMs: 4000 })
+        }
+      },
+      {
         id: 'check-for-updates',
         title: t('palette.checkUpdates'),
         hint: t('palette.checkUpdatesHint'),
@@ -1154,6 +1203,8 @@ function AppInner({
       openSettings,
       appSettings.tmuxSessionName,
       appSettings.defaultPastePrompt,
+      appSettings.enablePortForwards,
+      portForwards,
       t,
       activeSessionId,
       createSession,
@@ -1334,7 +1385,10 @@ function AppInner({
               <PortForwards
                 sessionId={activeSessionId}
                 forwards={portForwards}
-                enabled={connState === 'connected'}
+                detected={detectedPorts}
+                connected={connState === 'connected'}
+                enabled
+                expandRequest={pfExpandRequest}
               />
             ) : null}
           </div>

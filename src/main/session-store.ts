@@ -7,7 +7,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import type { SessionId, SessionKind } from '@shared/types.js'
+import type { PortForwardDirection, SessionId, SessionKind } from '@shared/types.js'
 
 export const SESSION_SNAPSHOT_VERSION = 1 as const
 
@@ -19,6 +19,17 @@ export interface PersistedSshTarget {
   alias?: string
   privateKeyPath?: string
   useAgent?: boolean
+}
+
+/** Port-forward rule stored with a session (no secrets). */
+export interface PersistedPortForward {
+  direction?: PortForwardDirection
+  localPort: number
+  remoteHost: string
+  remotePort: number
+  bindHost?: string
+  label?: string
+  enabled?: boolean
 }
 
 export interface PersistedSession {
@@ -36,6 +47,8 @@ export interface PersistedSession {
   autoConnect: boolean
   /** Whether the user manually renamed the tab (preserve title on reconnect). */
   titleUserSet?: boolean
+  /** Local/remote port-forward rules restored after reconnect. */
+  portForwards?: PersistedPortForward[]
 }
 
 export interface SessionSnapshot {
@@ -126,7 +139,8 @@ export function normalizeSnapshot(raw: Partial<SessionSnapshot> | null | undefin
       target: kind === 'ssh' ? target : null,
       tmuxSession: kind === 'ssh' ? tmuxSession : null,
       autoConnect,
-      titleUserSet: s.titleUserSet === true
+      titleUserSet: s.titleUserSet === true,
+      portForwards: kind === 'ssh' ? sanitizePortForwards(s.portForwards) : undefined
     })
   }
   return {
@@ -173,6 +187,53 @@ export function targetToPersisted(t: {
   if (t.privateKeyPath) out.privateKeyPath = t.privateKeyPath
   if (t.useAgent) out.useAgent = true
   return out
+}
+
+function sanitizePortForwards(raw: unknown): PersistedPortForward[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined
+  const out: PersistedPortForward[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const o = item as Record<string, unknown>
+    const localPort =
+      typeof o.localPort === 'number' && o.localPort >= 0 && o.localPort <= 65535
+        ? Math.floor(o.localPort)
+        : -1
+    const remotePort =
+      typeof o.remotePort === 'number' && o.remotePort >= 0 && o.remotePort <= 65535
+        ? Math.floor(o.remotePort)
+        : -1
+    const remoteHost = typeof o.remoteHost === 'string' ? o.remoteHost.trim() : ''
+    if (localPort < 0 || remotePort < 0) continue
+    const direction: PortForwardDirection =
+      o.direction === 'remote' ? 'remote' : o.direction === 'dynamic' ? 'dynamic' : 'local'
+    // Dynamic rules don't need a real remote target.
+    const host =
+      direction === 'dynamic'
+        ? 'socks5'
+        : remoteHost
+          ? remoteHost.slice(0, 253)
+          : ''
+    if (direction !== 'dynamic' && !host) continue
+    if (direction === 'local' && remotePort < 1) continue
+    if (direction === 'remote' && localPort < 1) continue
+    const pf: PersistedPortForward = {
+      direction,
+      localPort,
+      remoteHost: host || 'socks5',
+      remotePort: direction === 'dynamic' ? 0 : remotePort
+    }
+    if (typeof o.bindHost === 'string' && o.bindHost.trim()) {
+      pf.bindHost = o.bindHost.trim().slice(0, 253)
+    }
+    if (typeof o.label === 'string' && o.label.trim()) {
+      pf.label = o.label.trim().slice(0, 40)
+    }
+    if (o.enabled === false) pf.enabled = false
+    out.push(pf)
+    if (out.length >= 32) break
+  }
+  return out.length ? out : undefined
 }
 
 /** Whether this target can be reconnected without a stored password. */

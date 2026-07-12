@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard } from 'electron'
+import { app, BrowserWindow, clipboard, shell } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { PORTICO_REMOTE_DIR, XTERM_MODE_SOFT_RESET } from '@shared/constants.js'
 import { detectProvider, formatForProvider } from '@shared/adapters.js'
@@ -12,9 +12,16 @@ import {
   saveSessionSnapshot,
   saveSessionSnapshotSync,
   targetToPersisted,
+  type PersistedPortForward,
   type PersistedSession,
   type SessionSnapshot
 } from './session-store.js'
+import {
+  detectPortsFromText,
+  mergeDetectedPorts,
+  type DetectedPort
+} from '@shared/port-detect.js'
+import type { PortForwardAddOpts } from './port-forwarder.js'
 import {
   composeSessionTitle,
   parseClaudeWorkContext
@@ -31,6 +38,7 @@ import type {
 import type {
   ConnectionState,
   NormalizedImage,
+  PortForwardDirection,
   PortForwardRule,
   PortForwardStatus,
   ProviderId,
@@ -103,8 +111,11 @@ interface HandleHost {
   onConnState(payload: ConnStatePayload): void
   onShelf(sessionId: SessionId, item: ShelfItem): void
   onPortForwards(sessionId: SessionId, forwards: PortForwardStatus[]): void
+  onDetectedPorts(sessionId: SessionId, ports: DetectedPort[]): void
   onProviderSession(sessionId: SessionId, session: ProviderSession): void
   onSummaryChanged(): void
+  /** Cross-session local listen-port collision check. */
+  isLocalPortClaimed(port: number, exceptSessionId?: SessionId): boolean
 }
 
 /**
@@ -156,6 +167,16 @@ class SessionHandle {
   private reconnectCancelled = false
   private closeHandled = false
   private portForwarder: PortForwarder | null = null
+  /**
+   * Source of truth for PF rules across disconnect / reconnect / relaunch.
+   * Live tunnels live in `portForwarder` when connected.
+   */
+  private savedPfRules: PortForwardAddOpts[] = []
+  /** Ports sniffed from terminal output (newest first). */
+  private detectedPorts: DetectedPort[] = []
+  private dismissedDetectedPorts = new Set<number>()
+  private lastPortDetectAt = 0
+  private portDetectBuf = ''
   private pendingReconnectSession: SshSession | null = null
   private lifecycleEpoch = 0
   private connectInFlight = false
@@ -203,6 +224,9 @@ class SessionHandle {
       if (this.wantsAutoConnect && !canAutoConnectSsh(p.target)) {
         this.wantsAutoConnect = false
       }
+      if (p.portForwards?.length) {
+        this.savedPfRules = p.portForwards.map(persistedPfToOpts)
+      }
     }
   }
 
@@ -212,6 +236,7 @@ class SessionHandle {
       this.kind ??
       (this.local?.isConnected() ? 'local' : live ? 'ssh' : null)
     const connected = !!(this.ssh?.isConnected() || this.local?.isConnected())
+    const portForwards = this.exportPersistedPortForwards()
     if (kind === 'ssh' && live) {
       const persisted = targetToPersisted(live)
       const autoConnect =
@@ -223,7 +248,8 @@ class SessionHandle {
         target: persisted,
         tmuxSession: this.preferredTmuxSession,
         autoConnect,
-        titleUserSet: this.titleUserSet
+        titleUserSet: this.titleUserSet,
+        portForwards
       }
     }
     if (kind === 'local') {
@@ -247,6 +273,35 @@ class SessionHandle {
       autoConnect: false,
       titleUserSet: this.titleUserSet
     }
+  }
+
+  private exportPersistedPortForwards(): PersistedPortForward[] | undefined {
+    const specs = this.portForwarder?.exportSpecs() ?? this.savedPfRules
+    if (!specs.length) return undefined
+    return specs.map((s) => {
+      const pf: PersistedPortForward = {
+        direction: normalizePfDirection(s.direction),
+        localPort: s.localPort,
+        remoteHost: s.direction === 'dynamic' ? 'socks5' : s.remoteHost,
+        remotePort: s.direction === 'dynamic' ? 0 : s.remotePort
+      }
+      if (s.bindHost) pf.bindHost = s.bindHost
+      if (s.label) pf.label = s.label
+      if (s.enabled === false) pf.enabled = false
+      return pf
+    })
+  }
+
+  /** Local listen ports claimed by this session (for cross-tab conflict checks). */
+  claimedLocalPorts(): number[] {
+    if (this.portForwarder) return this.portForwarder.claimedLocalPorts()
+    const ports: number[] = []
+    for (const r of this.savedPfRules) {
+      if (r.direction === 'remote') continue
+      if (r.enabled === false) continue
+      if (r.localPort > 0) ports.push(r.localPort)
+    }
+    return ports
   }
 
   summary(): SessionSummary {
@@ -307,8 +362,12 @@ class SessionHandle {
       /* ignore */
     }
     this.ssh = null
-    this.portForwarder?.destroyAll()
-    this.portForwarder = null
+    // Preserve rules across disconnect/reconnect; only tear down live tunnels.
+    if (this.portForwarder) {
+      this.savedPfRules = this.portForwarder.exportSpecs()
+      this.portForwarder.destroyAll()
+      this.portForwarder = null
+    }
   }
 
   async connectLocal(): Promise<Result<ConnectResult>> {
@@ -442,10 +501,7 @@ class SessionHandle {
 
       if (this.lastDims) session.resize(this.lastDims)
 
-      if (this.host.getFlags().portForwards) {
-        this.portForwarder = new PortForwarder(() => this.ssh?.getClient() ?? null)
-        this.portForwarder.on('change', () => this.pushPortForwards())
-      }
+      await this.ensurePortForwarderAndRestore()
 
       this.interactive = true
       this.provider = 'shell'
@@ -508,6 +564,8 @@ class SessionHandle {
     this.localShell = ''
     // Keep kind so the rail still shows local/ssh identity while disconnected.
     this.setConnState('disconnected')
+    // Rules kept in savedPfRules — UI shows them as stopped until reconnect.
+    this.pushPortForwards()
     this.host.onSummaryChanged()
     return ok(true)
   }
@@ -532,6 +590,7 @@ class SessionHandle {
     this.kind = null
     this.localShell = ''
     this.setConnState('disconnected')
+    this.pushPortForwards()
     this.host.onStatus('info', 'Reconnection cancelled.', undefined, this.id)
     this.host.onSummaryChanged()
     return ok(true)
@@ -651,8 +710,12 @@ class SessionHandle {
       this.ssh = null
       this.local = null
       this.setConnState('disconnected')
-      this.portForwarder?.destroyAll()
-      this.portForwarder = null
+      if (this.portForwarder) {
+        this.savedPfRules = this.portForwarder.exportSpecs()
+        this.portForwarder.destroyAll()
+        this.portForwarder = null
+      }
+      this.pushPortForwards()
       this.host.onSummaryChanged()
       return
     }
@@ -712,8 +775,13 @@ class SessionHandle {
         undefined,
         this.id
       )
-      this.portForwarder?.destroyAll()
-      this.portForwarder = null
+      // Keep saved rules for a later manual reconnect; free local listeners.
+      if (this.portForwarder) {
+        this.savedPfRules = this.portForwarder.exportSpecs()
+        this.portForwarder.destroyAll()
+        this.portForwarder = null
+      }
+      this.pushPortForwards()
       this.target = null
       this.host.onSummaryChanged()
       return
@@ -772,7 +840,11 @@ class SessionHandle {
       )
 
       if (this.host.getFlags().portForwards) {
-        this.portForwarder?.resumeAll()
+        if (this.portForwarder) {
+          this.portForwarder.resumeAll()
+        } else {
+          await this.ensurePortForwarderAndRestore()
+        }
       }
 
       this.reconnectAttempt = 0
@@ -893,8 +965,45 @@ class SessionHandle {
     }
     // Learn which tmux session this tab is in (status bar / scrollback).
     this.maybeProbeTmuxFromOutput()
+    if (this.host.getFlags().portForwards && this.kind === 'ssh') {
+      this.maybeDetectPorts(text)
+    }
     if (!text) return
     this.host.onOutput(this.id, text)
+  }
+
+  /** Sniff dev-server ports from PTY text (throttled). */
+  private maybeDetectPorts(text: string): void {
+    if (!text) return
+    this.portDetectBuf += text
+    if (this.portDetectBuf.length > 16_000) {
+      this.portDetectBuf = this.portDetectBuf.slice(-12_000)
+    }
+    const now = Date.now()
+    if (now - this.lastPortDetectAt < 800) return
+    this.lastPortDetectAt = now
+    const chunk = this.portDetectBuf
+    this.portDetectBuf = ''
+    const found = detectPortsFromText(chunk, 8).filter(
+      (d) => !this.dismissedDetectedPorts.has(d.port)
+    )
+    if (!found.length) return
+    // Hide ports already forwarded (same remote port).
+    const forwardedRemote = new Set(
+      (this.portForwarder?.list() ?? this.listSavedAsStatus())
+        .filter((f) => f.direction !== 'remote')
+        .map((f) => f.remotePort)
+    )
+    const fresh = found.filter((d) => !forwardedRemote.has(d.port))
+    if (!fresh.length) return
+    const prevKey = this.detectedPorts.map((d) => d.port).join(',')
+    this.detectedPorts = mergeDetectedPorts(this.detectedPorts, fresh, 12).filter(
+      (d) => !this.dismissedDetectedPorts.has(d.port) && !forwardedRemote.has(d.port)
+    )
+    const nextKey = this.detectedPorts.map((d) => d.port).join(',')
+    if (prevKey !== nextKey) {
+      this.host.onDetectedPorts(this.id, this.detectedPorts)
+    }
   }
 
   private providerDetectInFlight = false
@@ -1406,6 +1515,10 @@ class SessionHandle {
     localPort: number
     remoteHost: string
     remotePort: number
+    direction?: PortForwardDirection
+    bindHost?: string
+    label?: string
+    enabled?: boolean
   }): Promise<Result<PortForwardRule>> {
     if (!this.host.getFlags().portForwards) {
       return err('FEATURE_DISABLED', 'Port forwarding is disabled (Terminal only mode).')
@@ -1413,9 +1526,72 @@ class SessionHandle {
     if (this.kind === 'local') {
       return err('NOT_SUPPORTED', 'Port forwarding requires an SSH session.')
     }
-    if (!this.portForwarder) return err('NOT_CONNECTED', 'Connect to a host first.')
+    const direction = normalizePfDirection(rule.direction)
+    // Cross-session local listen conflict (fixed ports only).
+    if ((direction === 'local' || direction === 'dynamic') && rule.localPort > 0) {
+      if (this.host.isLocalPortClaimed(rule.localPort, this.id)) {
+        return err(
+          'PORT_IN_USE',
+          `Local port ${rule.localPort} is already forwarded by another session.`
+        )
+      }
+    }
+
+    // Allow queuing rules while disconnected — they activate on next connect.
+    if (!this.portForwarder || !this.ssh?.isConnected()) {
+      if ((direction === 'local' || direction === 'dynamic') && rule.localPort > 0) {
+        for (const s of this.savedPfRules) {
+          if (s.direction === 'remote') continue
+          if (s.enabled === false) continue
+          if (s.localPort === rule.localPort) {
+            return err('PORT_IN_USE', `Port ${rule.localPort} is already forwarded.`)
+          }
+        }
+      }
+      const id = randomUUID()
+      const saved: PortForwardAddOpts = {
+        id,
+        direction,
+        localPort: rule.localPort,
+        remoteHost: direction === 'dynamic' ? 'socks5' : rule.remoteHost || '127.0.0.1',
+        remotePort: direction === 'dynamic' ? 0 : rule.remotePort,
+        bindHost: rule.bindHost,
+        label: rule.label,
+        enabled: rule.enabled !== false
+      }
+      this.savedPfRules.push(saved)
+      this.pushPortForwards()
+      this.host.onSummaryChanged()
+      return ok({
+        id,
+        direction,
+        localPort: saved.localPort,
+        remoteHost: saved.remoteHost,
+        remotePort: saved.remotePort,
+        bindHost: saved.bindHost,
+        label: saved.label,
+        enabled: saved.enabled !== false
+      })
+    }
+
     try {
-      const added = await this.portForwarder.add(rule)
+      const added = await this.portForwarder.add({
+        direction,
+        localPort: rule.localPort,
+        remoteHost: direction === 'dynamic' ? 'socks5' : rule.remoteHost || '127.0.0.1',
+        remotePort: direction === 'dynamic' ? 0 : rule.remotePort,
+        bindHost: rule.bindHost,
+        label: rule.label,
+        enabled: rule.enabled
+      })
+      this.savedPfRules = this.portForwarder.exportSpecs()
+      // Dismiss matching detected suggestion (local forwards only).
+      if (direction === 'local') {
+        this.dismissedDetectedPorts.add(added.remotePort)
+        this.detectedPorts = this.detectedPorts.filter((d) => d.port !== added.remotePort)
+        this.host.onDetectedPorts(this.id, this.detectedPorts)
+      }
+      this.host.onSummaryChanged()
       return ok(added)
     } catch (e) {
       const code = (e as { code?: string }).code ?? 'PF_ADD_FAILED'
@@ -1424,24 +1600,170 @@ class SessionHandle {
   }
 
   removePortForward(id: string): Result<true> {
-    if (!this.portForwarder) return err('NOT_CONNECTED', 'No active session.')
-    this.portForwarder.remove(id)
+    if (this.portForwarder) {
+      this.portForwarder.remove(id)
+      this.savedPfRules = this.portForwarder.exportSpecs()
+    } else {
+      this.savedPfRules = this.savedPfRules.filter((r) => r.id !== id)
+      this.pushPortForwards()
+    }
+    this.host.onSummaryChanged()
     return ok(true)
   }
 
+  async setPortForwardEnabled(id: string, enabled: boolean): Promise<Result<PortForwardRule>> {
+    if (!this.host.getFlags().portForwards) {
+      return err('FEATURE_DISABLED', 'Port forwarding is disabled (Terminal only mode).')
+    }
+    if (this.portForwarder) {
+      try {
+        const updated = await this.portForwarder.setEnabled(id, enabled)
+        if (!updated) return err('NOT_FOUND', 'Port forward not found.')
+        this.savedPfRules = this.portForwarder.exportSpecs()
+        this.host.onSummaryChanged()
+        return ok(updated)
+      } catch (e) {
+        const code = (e as { code?: string }).code ?? 'PF_TOGGLE_FAILED'
+        return err(code, (e as Error).message)
+      }
+    }
+    const idx = this.savedPfRules.findIndex((r) => r.id === id)
+    if (idx < 0) return err('NOT_FOUND', 'Port forward not found.')
+    this.savedPfRules[idx] = { ...this.savedPfRules[idx], enabled }
+    this.pushPortForwards()
+    this.host.onSummaryChanged()
+    const r = this.savedPfRules[idx]
+    return ok({
+      id: r.id!,
+      direction: normalizePfDirection(r.direction),
+      localPort: r.localPort,
+      remoteHost: r.remoteHost,
+      remotePort: r.remotePort,
+      bindHost: r.bindHost,
+      label: r.label,
+      enabled: r.enabled !== false
+    })
+  }
+
+  resetPortForwardStats(id?: string): Result<true> {
+    if (this.portForwarder) {
+      this.portForwarder.resetStats(id)
+    }
+    return ok(true)
+  }
+
+  async openPortForward(id: string): Promise<Result<true>> {
+    const list = this.portForwarder?.list() ?? this.listSavedAsStatus()
+    const f = list.find((x) => x.id === id)
+    if (!f) return err('NOT_FOUND', 'Port forward not found.')
+    if (f.direction !== 'local') {
+      return err('NOT_SUPPORTED', 'Open in browser is only for local (-L) forwards.')
+    }
+    const port = f.effectiveLocalPort || f.localPort
+    if (!port || port < 1) return err('INVALID_PORT', 'No local port to open.')
+    const url = `http://127.0.0.1:${port}`
+    try {
+      await shell.openExternal(url)
+      return ok(true)
+    } catch (e) {
+      return err('OPEN_FAILED', (e as Error).message)
+    }
+  }
+
   listPortForwards(): Result<PortForwardStatus[]> {
-    return ok(this.portForwarder?.list() ?? [])
+    return ok(this.portForwarder?.list() ?? this.listSavedAsStatus())
+  }
+
+  listDetectedPorts(): Result<DetectedPort[]> {
+    return ok([...this.detectedPorts])
+  }
+
+  dismissDetectedPort(port: number): Result<true> {
+    this.dismissedDetectedPorts.add(port)
+    this.detectedPorts = this.detectedPorts.filter((d) => d.port !== port)
+    this.host.onDetectedPorts(this.id, this.detectedPorts)
+    return ok(true)
+  }
+
+  private listSavedAsStatus(): PortForwardStatus[] {
+    return this.savedPfRules.map((r) => ({
+      id: r.id || randomUUID(),
+      direction: normalizePfDirection(r.direction),
+      localPort: r.localPort,
+      remoteHost: r.remoteHost,
+      remotePort: r.remotePort,
+      bindHost: r.bindHost,
+      label: r.label,
+      enabled: r.enabled !== false,
+      state: r.enabled === false ? ('paused' as const) : ('stopped' as const),
+      activeConnections: 0,
+      error: r.enabled === false ? undefined : 'Disconnected',
+      effectiveLocalPort: r.localPort > 0 ? r.localPort : undefined,
+      bytesUp: 0,
+      bytesDown: 0
+    }))
+  }
+
+  private async ensurePortForwarderAndRestore(): Promise<void> {
+    if (!this.host.getFlags().portForwards) return
+    if (!this.ssh?.isConnected()) return
+
+    if (!this.portForwarder) {
+      this.portForwarder = new PortForwarder(() => this.ssh?.getClient() ?? null)
+      this.portForwarder.on('change', () => {
+        this.savedPfRules = this.portForwarder?.exportSpecs() ?? this.savedPfRules
+        this.pushPortForwards()
+        this.host.onSummaryChanged()
+      })
+    }
+
+    // Restore saved rules into a fresh forwarder.
+    const specs = [...this.savedPfRules]
+    // Clear live list first if we re-created; add() will re-populate.
+    const existing = this.portForwarder.list()
+    if (existing.length === 0 && specs.length > 0) {
+      for (const spec of specs) {
+        try {
+          if (
+            (spec.direction ?? 'local') === 'local' &&
+            spec.localPort > 0 &&
+            this.host.isLocalPortClaimed(spec.localPort, this.id)
+          ) {
+            log.warn('controller', 'skip restore pf: port claimed by other session', {
+              sessionId: this.id,
+              localPort: spec.localPort
+            })
+            continue
+          }
+          await this.portForwarder.add(spec)
+        } catch (e) {
+          log.warn('controller', 'restore port forward failed', {
+            sessionId: this.id,
+            localPort: spec.localPort,
+            remotePort: spec.remotePort,
+            err: e as Error
+          })
+        }
+      }
+      this.savedPfRules = this.portForwarder.exportSpecs()
+    } else if (existing.length > 0) {
+      await this.portForwarder.rebindAll()
+    }
+    this.pushPortForwards()
   }
 
   private pushPortForwards(): void {
-    this.host.onPortForwards(this.id, this.portForwarder?.list() ?? [])
+    this.host.onPortForwards(this.id, this.portForwarder?.list() ?? this.listSavedAsStatus())
   }
 
   destroyPortForwardsIfDisabled(): void {
     if (!this.host.getFlags().portForwards) {
       this.portForwarder?.destroyAll()
       this.portForwarder = null
+      this.savedPfRules = []
+      this.detectedPorts = []
       this.pushPortForwards()
+      this.host.onDetectedPorts(this.id, [])
     }
   }
 
@@ -1572,6 +1894,7 @@ export class PorticoController {
   shelfListeners = new Set<(p: { sessionId: SessionId; item: ShelfItem }) => void>()
   connStateListeners = new Set<(payload: ConnStatePayload) => void>()
   pfListeners = new Set<(p: { sessionId: SessionId; forwards: PortForwardStatus[] }) => void>()
+  detectedPortListeners = new Set<(p: { sessionId: SessionId; ports: DetectedPort[] }) => void>()
   sessionListeners = new Set<(p: { sessionId: SessionId; session: ProviderSession }) => void>()
   sessionsListListeners = new Set<(sessions: SessionSummary[]) => void>()
 
@@ -1810,6 +2133,15 @@ export class PorticoController {
           }
         }
       },
+      onDetectedPorts: (sessionId, ports) => {
+        for (const cb of this.detectedPortListeners) {
+          try {
+            cb({ sessionId, ports })
+          } catch (e) {
+            log.warn('controller', 'detectedPorts listener threw', { err: e as Error })
+          }
+        }
+      },
       onProviderSession: (sessionId, session) => {
         for (const cb of this.sessionListeners) {
           try {
@@ -1822,6 +2154,14 @@ export class PorticoController {
       onSummaryChanged: () => {
         this.pushSessionsList()
         this.schedulePersist()
+      },
+      isLocalPortClaimed: (port, exceptSessionId) => {
+        if (port <= 0) return false
+        for (const h of this.sessions.values()) {
+          if (exceptSessionId && h.id === exceptSessionId) continue
+          if (h.claimedLocalPorts().includes(port)) return true
+        }
+        return false
       }
     }
   }
@@ -2062,7 +2402,15 @@ export class PorticoController {
 
   async addPortForward(
     sessionId: SessionId,
-    rule: { localPort: number; remoteHost: string; remotePort: number }
+    rule: {
+      localPort: number
+      remoteHost: string
+      remotePort: number
+      direction?: PortForwardDirection
+      bindHost?: string
+      label?: string
+      enabled?: boolean
+    }
   ): Promise<Result<PortForwardRule>> {
     const r = this.require(sessionId)
     if (!r.ok) return r
@@ -2075,10 +2423,51 @@ export class PorticoController {
     return r.value.removePortForward(id)
   }
 
+  async setPortForwardEnabled(
+    sessionId: SessionId,
+    id: string,
+    enabled: boolean
+  ): Promise<Result<PortForwardRule>> {
+    const r = this.require(sessionId)
+    if (!r.ok) return r
+    return r.value.setPortForwardEnabled(id, enabled)
+  }
+
+  async openPortForward(sessionId: SessionId, id: string): Promise<Result<true>> {
+    const r = this.require(sessionId)
+    if (!r.ok) return r
+    return r.value.openPortForward(id)
+  }
+
   listPortForwards(sessionId: SessionId): Result<PortForwardStatus[]> {
     const r = this.require(sessionId)
     if (!r.ok) return r
     return r.value.listPortForwards()
+  }
+
+  listDetectedPorts(sessionId: SessionId): Result<DetectedPort[]> {
+    const r = this.require(sessionId)
+    if (!r.ok) return r
+    return r.value.listDetectedPorts()
+  }
+
+  dismissDetectedPort(sessionId: SessionId, port: number): Result<true> {
+    const r = this.require(sessionId)
+    if (!r.ok) return r
+    return r.value.dismissDetectedPort(port)
+  }
+
+  resetPortForwardStats(sessionId: SessionId, id?: string): Result<true> {
+    const r = this.require(sessionId)
+    if (!r.ok) return r
+    return r.value.resetPortForwardStats(id)
+  }
+
+  onDetectedPortsChanged(
+    cb: (p: { sessionId: SessionId; ports: DetectedPort[] }) => void
+  ): () => void {
+    this.detectedPortListeners.add(cb)
+    return () => this.detectedPortListeners.delete(cb)
   }
 
   async listTmuxSessions(sessionId: SessionId): Promise<Result<TmuxSessionInfo[]>> {
@@ -2116,6 +2505,25 @@ export class PorticoController {
       sessionId
     }
     for (const cb of this.statusListeners) cb(payload)
+  }
+}
+
+function normalizePfDirection(d?: string): PortForwardDirection {
+  if (d === 'remote') return 'remote'
+  if (d === 'dynamic') return 'dynamic'
+  return 'local'
+}
+
+function persistedPfToOpts(p: PersistedPortForward): PortForwardAddOpts {
+  return {
+    id: randomUUID(),
+    direction: normalizePfDirection(p.direction),
+    localPort: p.localPort,
+    remoteHost: p.direction === 'dynamic' ? 'socks5' : p.remoteHost,
+    remotePort: p.direction === 'dynamic' ? 0 : p.remotePort,
+    bindHost: p.bindHost,
+    label: p.label,
+    enabled: p.enabled !== false
   }
 }
 

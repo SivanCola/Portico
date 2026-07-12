@@ -310,6 +310,9 @@ app.whenReady().then(() => {
   controller.pfListeners.add((p) =>
     mainWindow?.webContents.send(IPC.PF_CHANGED, p)
   )
+  controller.detectedPortListeners.add((p) =>
+    mainWindow?.webContents.send(IPC.PF_DETECTED_CHANGED, p)
+  )
   controller.sessionListeners.add((p) =>
     mainWindow?.webContents.send(IPC.SESSION_CHANGED, p)
   )
@@ -466,19 +469,50 @@ function registerIpc(c: PorticoController): void {
 
   // Port forwarding
   handleArg<
-    { sessionId: SessionId; localPort: number; remoteHost: string; remotePort: number },
+    {
+      sessionId: SessionId
+      localPort: number
+      remoteHost: string
+      remotePort: number
+      direction?: import('@shared/types.js').PortForwardDirection
+      bindHost?: string
+      label?: string
+      enabled?: boolean
+    },
     Result<PortForwardRule>
   >(IPC.PF_ADD, (a) =>
     c.addPortForward(a.sessionId, {
       localPort: a.localPort,
       remoteHost: a.remoteHost,
-      remotePort: a.remotePort
+      remotePort: a.remotePort,
+      direction: a.direction,
+      bindHost: a.bindHost,
+      label: a.label,
+      enabled: a.enabled
     })
   )
   handleArg<{ sessionId: SessionId; id: string }, Result<true>>(IPC.PF_REMOVE, (a) =>
     c.removePortForward(a.sessionId, a.id)
   )
+  handleArg<
+    { sessionId: SessionId; id: string; enabled: boolean },
+    Result<PortForwardRule>
+  >(IPC.PF_SET_ENABLED, (a) => c.setPortForwardEnabled(a.sessionId, a.id, a.enabled))
+  handleArg<{ sessionId: SessionId; id: string }, Result<true>>(IPC.PF_OPEN, (a) =>
+    c.openPortForward(a.sessionId, a.id)
+  )
   handleArg<SessionId, Result<PortForwardStatus[]>>(IPC.PF_LIST, (id) => c.listPortForwards(id))
+  handleArg<SessionId, Result<import('@shared/port-detect.js').DetectedPort[]>>(
+    IPC.PF_DETECTED_LIST,
+    (id) => c.listDetectedPorts(id)
+  )
+  handleArg<{ sessionId: SessionId; port: number }, Result<true>>(
+    IPC.PF_DISMISS_DETECTED,
+    (a) => c.dismissDetectedPort(a.sessionId, a.port)
+  )
+  handleArg<{ sessionId: SessionId; id?: string }, Result<true>>(IPC.PF_RESET_STATS, (a) =>
+    c.resetPortForwardStats(a.sessionId, a.id)
+  )
 
   // App info & updates
   handle(IPC.GET_APP_INFO, getAppInfo)

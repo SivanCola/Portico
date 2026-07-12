@@ -50,13 +50,53 @@ npm test             # vitest unit tests for pure logic
 - `⌘/Ctrl + Shift + P` — command palette
 - `⌘/Ctrl + Shift + V` — **stage** clipboard image(s) locally (no upload yet; repeat for more)
 - Enter in the Image Shelf commit bar — upload all staged images, inject paths, and submit to Claude/Codex
+- `⌘/Ctrl + \` — toggle the tool sidebar (image shelf + port forwards)
+
+## Port forwarding
+
+SSH sessions support **local** (`-L`) and **remote** (`-R`) port forwards from the
+right-hand tool sidebar (enable under **Settings → Port forwarding**).
+
+| Mode | Meaning | Typical use |
+| ---- | ------- | ----------- |
+| Local (−L) | Mac listens → tunnel to host:port **on the server** | Claude Code / Vite / Next preview on the remote machine |
+| Remote (−R) | Server listens → tunnel back to a service **on your Mac** | Webhooks, local agents |
+| SOCKS (−D) | Mac runs a **SOCKS5** proxy; each request is forwarded over SSH | Browse / curl as if from the remote host |
+
+**SOCKS example:** add a dynamic forward on local port `1080`, then:
+
+```bash
+curl --socks5-hostname 127.0.0.1:1080 https://ifconfig.me
+# or configure the system / browser proxy to socks5://127.0.0.1:1080
+```
+
+Each rule shows live **traffic counters** (↑ local→remote, ↓ remote→local). Click a
+row counter to reset that rule, or **Reset traffic** for the whole session.
+
+**Workflow for remote dev servers**
+
+1. Connect over SSH and start a server (e.g. Claude Code opens `localhost:5173` on the host).
+2. Portico sniffs terminal output for URLs like `http://localhost:5173` and offers **one-click Forward**.
+3. Or add a rule manually: local port → `127.0.0.1` : remote port (defaults to same port both sides).
+4. Click the browser icon on a listening local forward, or use the command palette **Open port forward in browser**.
+
+Rules are **persisted per session tab** (with host/tmux restore), survive intentional disconnect
+(shown as *stopped*), and rebind on reconnect. Options:
+
+- **Same port both sides** / **Auto local port** when the preferred local port is busy
+- **Pause / resume** a single rule without deleting it
+- **Advanced**: label, bind address (`127.0.0.1` default; `0.0.0.0` exposes LAN — use carefully)
+- Cross-tab collision detection for the same local listen port
+
+Disable the feature under **Settings → Port forwarding**, or use **Terminal only** mode to
+turn off image bridge + port forwards + provider detect together.
 
 ## Session restore
 
 Portico saves the left-rail tab layout to `userData/sessions.json` (no passwords).
 On launch it can reopen tabs and auto-reconnect SSH (key or agent) and
-`tmux attach` to each tab’s last tmux session. Toggle under **Settings →
-Restore sessions on launch**.
+`tmux attach` to each tab’s last tmux session, and restore that tab’s **port-forward rules**.
+Toggle under **Settings → Restore sessions on launch**.
 
 ## Storage convention
 

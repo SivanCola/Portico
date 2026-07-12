@@ -73,9 +73,14 @@ vi.mock('./port-forwarder.js', () => ({
     destroyAll = vi.fn()
     dropActiveTunnels = vi.fn()
     resumeAll = vi.fn()
+    rebindAll = vi.fn(async () => {})
+    exportSpecs = vi.fn(() => [])
+    claimedLocalPorts = vi.fn(() => [])
     list = () => []
     add = vi.fn()
     remove = vi.fn()
+    setEnabled = vi.fn(async () => null)
+    resetStats = vi.fn()
   }
 }))
 

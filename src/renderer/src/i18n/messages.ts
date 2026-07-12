@@ -203,6 +203,36 @@ export type MessageKey =
   | 'pf.local'
   | 'pf.host'
   | 'pf.port'
+  | 'pf.detected'
+  | 'pf.forward'
+  | 'pf.dismiss'
+  | 'pf.dirLocal'
+  | 'pf.dirRemote'
+  | 'pf.dirDynamic'
+  | 'pf.dynamicHint'
+  | 'pf.copySocks'
+  | 'pf.trafficHint'
+  | 'pf.resetStats'
+  | 'pf.samePort'
+  | 'pf.autoPort'
+  | 'pf.auto'
+  | 'pf.localHint'
+  | 'pf.showAdvanced'
+  | 'pf.hideAdvanced'
+  | 'pf.label'
+  | 'pf.bindHost'
+  | 'pf.localHost'
+  | 'pf.bindWarn'
+  | 'pf.offlineHint'
+  | 'pf.openBrowser'
+  | 'pf.copyUrl'
+  | 'pf.pause'
+  | 'pf.resume'
+  | 'pf.remove'
+  | 'palette.addPortForward'
+  | 'palette.addPortForwardHint'
+  | 'palette.openPortForward'
+  | 'palette.openPortForwardHint'
   | 'status.connectFirst'
   | 'status.noClipboardImage'
   | 'status.imageBridgeOff'
@@ -447,6 +477,36 @@ const en: Catalog = {
   'pf.local': 'Local',
   'pf.host': 'Host',
   'pf.port': 'Port',
+  'pf.detected': 'Detected ports',
+  'pf.forward': 'Forward',
+  'pf.dismiss': 'Dismiss',
+  'pf.dirLocal': 'Local (−L)',
+  'pf.dirRemote': 'Remote (−R)',
+  'pf.dirDynamic': 'SOCKS (−D)',
+  'pf.dynamicHint': 'Local SOCKS5 proxy; destinations chosen per request via SSH.',
+  'pf.copySocks': 'Copy socks5://127.0.0.1:port',
+  'pf.trafficHint': 'Bytes this session (click a row counter to reset that rule)',
+  'pf.resetStats': 'Reset traffic',
+  'pf.samePort': 'Same port both sides',
+  'pf.autoPort': 'Auto local port',
+  'pf.auto': 'auto',
+  'pf.localHint': 'Local port (0 / auto assigns an ephemeral port)',
+  'pf.showAdvanced': 'Advanced',
+  'pf.hideAdvanced': 'Hide advanced',
+  'pf.label': 'Label (optional)',
+  'pf.bindHost': 'Local bind (127.0.0.1 or 0.0.0.0)',
+  'pf.localHost': 'Local destination host',
+  'pf.bindWarn': '0.0.0.0 exposes this port on your LAN — only use on trusted networks.',
+  'pf.offlineHint': 'Not connected — rule will activate on next SSH connect.',
+  'pf.openBrowser': 'Open in browser',
+  'pf.copyUrl': 'Copy http://127.0.0.1:port',
+  'pf.pause': 'Pause',
+  'pf.resume': 'Resume',
+  'pf.remove': 'Remove',
+  'palette.addPortForward': 'Add port forward…',
+  'palette.addPortForwardHint': 'Open the port-forward form in the tool sidebar',
+  'palette.openPortForward': 'Open port forward in browser',
+  'palette.openPortForwardHint': 'Open the first listening local forward',
   'status.connectFirst': 'Connect to a host before pasting an image.',
   'status.noClipboardImage': 'No image in clipboard. Copy a screenshot or image, then ⌘⇧V to stage.',
   'status.imageBridgeOff': 'Image bridge is disabled. Turn off Terminal only mode in Settings.',
@@ -691,6 +751,36 @@ const zhCN: Catalog = {
   'pf.local': '本地',
   'pf.host': '主机',
   'pf.port': '端口',
+  'pf.detected': '检测到的端口',
+  'pf.forward': '转发',
+  'pf.dismiss': '忽略',
+  'pf.dirLocal': '本地（−L）',
+  'pf.dirRemote': '远端（−R）',
+  'pf.dirDynamic': 'SOCKS（−D）',
+  'pf.dynamicHint': '本机 SOCKS5 代理；每个请求经 SSH 转发到目标地址。',
+  'pf.copySocks': '复制 socks5://127.0.0.1:端口',
+  'pf.trafficHint': '本会话累计流量（点击单条计数可重置该规则）',
+  'pf.resetStats': '重置流量',
+  'pf.samePort': '两端同端口',
+  'pf.autoPort': '自动分配本地端口',
+  'pf.auto': '自动',
+  'pf.localHint': '本地端口（0 / 自动 表示分配临时端口）',
+  'pf.showAdvanced': '高级',
+  'pf.hideAdvanced': '收起高级',
+  'pf.label': '备注（可选）',
+  'pf.bindHost': '本地绑定（127.0.0.1 或 0.0.0.0）',
+  'pf.localHost': '本机目标主机',
+  'pf.bindWarn': '0.0.0.0 会把端口暴露到局域网 — 仅在可信网络使用。',
+  'pf.offlineHint': '当前未连接 — 规则将在下次 SSH 连接时生效。',
+  'pf.openBrowser': '在浏览器中打开',
+  'pf.copyUrl': '复制 http://127.0.0.1:端口',
+  'pf.pause': '暂停',
+  'pf.resume': '恢复',
+  'pf.remove': '删除',
+  'palette.addPortForward': '添加端口转发…',
+  'palette.addPortForwardHint': '打开侧栏端口转发表单',
+  'palette.openPortForward': '在浏览器中打开端口转发',
+  'palette.openPortForwardHint': '打开第一条正在监听的本地转发',
   'status.connectFirst': '请先连接到主机再粘贴图片。',
   'status.noClipboardImage': '剪贴板中没有图片。请先复制截图或图片，再按 ⌘⇧V 暂存。',
   'status.imageBridgeOff': '图片桥接已关闭。请在设置中关闭「仅终端模式」。',

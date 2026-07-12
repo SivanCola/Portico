@@ -170,19 +170,63 @@ export type ConnectPhase =
   | 'home'
   | 'ready'
 
-/** Definition of a single local-to-remote port forward. */
+/**
+ * Port-forward direction (OpenSSH equivalents):
+ *  - `local`   ≈ `-L`  (this machine listens → tunnel to remote host:port)
+ *  - `remote`  ≈ `-R`  (remote listens → tunnel back to a service on this machine)
+ *  - `dynamic` ≈ `-D`  (this machine runs a SOCKS5 proxy; destinations chosen per request)
+ */
+export type PortForwardDirection = 'local' | 'remote' | 'dynamic'
+
+/** Definition of a single port-forward rule (persisted + live). */
 export interface PortForwardRule {
   id: string
+  direction: PortForwardDirection
+  /**
+   * Port on this machine:
+   *  - local / dynamic: listen port (0 = auto-assign an ephemeral port)
+   *  - remote: local destination port the reverse tunnel connects to
+   */
   localPort: number
+  /**
+   * For local: destination host as seen from the SSH server (often 127.0.0.1).
+   * For remote: bind address on the SSH server (often 127.0.0.1).
+   * For dynamic: unused (stored as `socks5` for display).
+   */
   remoteHost: string
+  /**
+   * For local: destination port on remoteHost.
+   * For remote: listen port on the SSH server.
+   * For dynamic: unused (0).
+   */
   remotePort: number
+  /**
+   * For local / dynamic: local listen address (default 127.0.0.1; 0.0.0.0 exposes LAN).
+   * For remote: local destination host (default 127.0.0.1).
+   */
+  bindHost?: string
+  /** Optional user label (e.g. "Vite", "Claude preview"). */
+  label?: string
+  /** When false the rule is kept but not actively listening/forwarding. */
+  enabled: boolean
 }
 
 /** Runtime status of a port forward. */
 export interface PortForwardStatus extends PortForwardRule {
-  state: 'listening' | 'error' | 'stopped'
+  state: 'listening' | 'error' | 'stopped' | 'paused'
   activeConnections: number
   error?: string
+  /**
+   * Actual local listen port after auto-assign (local / dynamic).
+   * Equals localPort when localPort was non-zero.
+   */
+  effectiveLocalPort?: number
+  /** Last per-connection tunnel error (does not force rule into error). */
+  lastConnectError?: string
+  /** Bytes from local client → remote (this session lifetime). */
+  bytesUp: number
+  /** Bytes from remote → local client (this session lifetime). */
+  bytesDown: number
 }
 
 /** Standardized error shape crossing the IPC boundary. */

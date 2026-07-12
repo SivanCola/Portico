@@ -26,7 +26,15 @@ describe('normalizeSnapshot', () => {
           target: { host: '1.2.3.4', user: 'root', port: 22, useAgent: true },
           tmuxSession: 'htop',
           autoConnect: true,
-          titleUserSet: true
+          titleUserSet: true,
+          portForwards: [
+            {
+              localPort: 5173,
+              remoteHost: '127.0.0.1',
+              remotePort: 5173,
+              label: 'vite'
+            }
+          ]
         },
         {
           id: 'b',
@@ -39,7 +47,38 @@ describe('normalizeSnapshot', () => {
     })
     expect(snap.sessions[0]?.autoConnect).toBe(true)
     expect(snap.sessions[0]?.tmuxSession).toBe('htop')
+    expect(snap.sessions[0]?.portForwards).toEqual([
+      {
+        direction: 'local',
+        localPort: 5173,
+        remoteHost: '127.0.0.1',
+        remotePort: 5173,
+        label: 'vite'
+      }
+    ])
     expect(snap.sessions[1]?.autoConnect).toBe(false)
+  })
+
+  it('persists dynamic SOCKS rules', () => {
+    const snap = normalizeSnapshot({
+      sessions: [
+        {
+          id: 's',
+          title: 'socks',
+          kind: 'ssh',
+          target: { host: '1.2.3.4', user: 'u', port: 22, useAgent: true },
+          autoConnect: true,
+          portForwards: [
+            { direction: 'dynamic', localPort: 1080, remoteHost: 'socks5', remotePort: 0 }
+          ]
+        }
+      ]
+    })
+    expect(snap.sessions[0]?.portForwards?.[0]).toMatchObject({
+      direction: 'dynamic',
+      localPort: 1080,
+      remotePort: 0
+    })
   })
 })
 

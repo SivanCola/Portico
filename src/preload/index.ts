@@ -11,6 +11,7 @@ import {
   type ConnStatePayload,
   type PorticoApi,
   type PortForwardChangedPayload,
+  type DetectedPortsPayload,
   type ProviderSessionPayload,
   type ShelfItemPayload,
   type StatusPayload,
@@ -113,11 +114,25 @@ const api: PorticoApi = {
     ipcRenderer.invoke(IPC.PF_ADD, { sessionId, ...rule }),
   removePortForward: (sessionId, id) =>
     ipcRenderer.invoke(IPC.PF_REMOVE, { sessionId, id }),
+  setPortForwardEnabled: (sessionId, id, enabled) =>
+    ipcRenderer.invoke(IPC.PF_SET_ENABLED, { sessionId, id, enabled }),
+  openPortForward: (sessionId, id) =>
+    ipcRenderer.invoke(IPC.PF_OPEN, { sessionId, id }),
   listPortForwards: (sessionId) => ipcRenderer.invoke(IPC.PF_LIST, sessionId),
+  listDetectedPorts: (sessionId) => ipcRenderer.invoke(IPC.PF_DETECTED_LIST, sessionId),
+  dismissDetectedPort: (sessionId, port) =>
+    ipcRenderer.invoke(IPC.PF_DISMISS_DETECTED, { sessionId, port }),
+  resetPortForwardStats: (sessionId, id) =>
+    ipcRenderer.invoke(IPC.PF_RESET_STATS, { sessionId, id }),
   onPortForwardChanged: (cb) => {
     const h = (_e: IpcRendererEvent, payload: PortForwardChangedPayload) => cb(payload)
     ipcRenderer.on(IPC.PF_CHANGED, h)
     return () => ipcRenderer.removeListener(IPC.PF_CHANGED, h)
+  },
+  onDetectedPortsChanged: (cb) => {
+    const h = (_e: IpcRendererEvent, payload: DetectedPortsPayload) => cb(payload)
+    ipcRenderer.on(IPC.PF_DETECTED_CHANGED, h)
+    return () => ipcRenderer.removeListener(IPC.PF_DETECTED_CHANGED, h)
   },
 
   // Status

@@ -14,6 +14,7 @@ import type {
   AppInfo,
   ConnectPhase,
   ConnectionState,
+  PortForwardDirection,
   PortForwardRule,
   PortForwardStatus,
   ProviderId,
@@ -28,6 +29,7 @@ import type {
   UpdateStatus,
   UploadedBlob
 } from './types.js'
+import type { DetectedPort } from './port-detect.js'
 
 export const IPC = {
   // Multi-session lifecycle
@@ -98,6 +100,12 @@ export const IPC = {
   PF_REMOVE: 'portico:pf:remove',
   PF_LIST: 'portico:pf:list',
   PF_CHANGED: 'portico:pf:changed',
+  PF_SET_ENABLED: 'portico:pf:setEnabled',
+  PF_OPEN: 'portico:pf:open',
+  PF_DETECTED_LIST: 'portico:pf:detectedList',
+  PF_DETECTED_CHANGED: 'portico:pf:detectedChanged',
+  PF_DISMISS_DETECTED: 'portico:pf:dismissDetected',
+  PF_RESET_STATS: 'portico:pf:resetStats',
 
   // Status banner
   STATUS: 'portico:status',
@@ -241,6 +249,24 @@ export interface PortForwardChangedPayload {
   forwards: PortForwardStatus[]
 }
 
+/** Detected remote ports from terminal output (scoped). */
+export interface DetectedPortsPayload {
+  sessionId: SessionId
+  ports: DetectedPort[]
+}
+
+/** Args for adding a port-forward rule. */
+export interface PortForwardAddArgs {
+  sessionId: SessionId
+  localPort: number
+  remoteHost: string
+  remotePort: number
+  direction?: PortForwardDirection
+  bindHost?: string
+  label?: string
+  enabled?: boolean
+}
+
 /** Args for staging one or more local image files (paths on disk). */
 export interface UploadLocalImageArgs {
   sessionId: SessionId
@@ -337,11 +363,30 @@ export interface PorticoApi {
   // Port forwarding
   addPortForward(
     sessionId: SessionId,
-    rule: { localPort: number; remoteHost: string; remotePort: number }
+    rule: {
+      localPort: number
+      remoteHost: string
+      remotePort: number
+      direction?: PortForwardDirection
+      bindHost?: string
+      label?: string
+      enabled?: boolean
+    }
   ): Promise<Result<PortForwardRule>>
   removePortForward(sessionId: SessionId, id: string): Promise<Result<true>>
+  setPortForwardEnabled(
+    sessionId: SessionId,
+    id: string,
+    enabled: boolean
+  ): Promise<Result<PortForwardRule>>
   listPortForwards(sessionId: SessionId): Promise<Result<PortForwardStatus[]>>
+  openPortForward(sessionId: SessionId, id: string): Promise<Result<true>>
+  listDetectedPorts(sessionId: SessionId): Promise<Result<DetectedPort[]>>
+  dismissDetectedPort(sessionId: SessionId, port: number): Promise<Result<true>>
+  /** Reset byte counters for one rule (or all when id omitted). */
+  resetPortForwardStats(sessionId: SessionId, id?: string): Promise<Result<true>>
   onPortForwardChanged(cb: (payload: PortForwardChangedPayload) => void): () => void
+  onDetectedPortsChanged(cb: (payload: DetectedPortsPayload) => void): () => void
 
   // Status
   onStatus(cb: (s: StatusPayload) => void): () => void

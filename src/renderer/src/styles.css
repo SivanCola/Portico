@@ -1507,6 +1507,154 @@ html[data-platform='win32'] .topbar {
 .pf-dot-stopped {
   background: var(--warn);
 }
+.pf-dot-paused {
+  background: var(--text-faint);
+}
+.pf-detected {
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-elev-2));
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+}
+.pf-detected-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+.pf-detected-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.pf-detected-port {
+  flex: 1;
+  color: var(--text);
+}
+.pf-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.pf-chip {
+  font-size: 10px;
+  font-family: var(--mono);
+  padding: 2px 6px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.pf-chip:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.pf-dir-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.pf-dir {
+  font-size: 11px;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.pf-dir.active {
+  color: var(--text);
+}
+.pf-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.pf-check {
+  font-size: 10px;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.pf-advanced {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+.pf-input-wide {
+  width: 100%;
+}
+.pf-warn {
+  color: var(--warn);
+  font-size: 10px;
+}
+.pf-hint {
+  color: var(--text-faint);
+  font-size: 10px;
+  margin-top: 4px;
+}
+.pf-label {
+  color: var(--text-dim);
+  font-style: italic;
+}
+.pf-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+.pf-action {
+  background: transparent;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 4px;
+  line-height: 1;
+}
+.pf-action:hover:not(:disabled) {
+  color: var(--text);
+}
+.pf-action:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.pf-item .pf-remove {
+  margin-left: 0;
+}
+.pf-traffic-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+  padding: 2px 4px;
+}
+.pf-traffic,
+.pf-bytes {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.pf-bytes {
+  cursor: pointer;
+}
+.pf-bytes:hover {
+  color: var(--text);
+}
 .pf-item-stopped {
   opacity: 0.75;
 }
