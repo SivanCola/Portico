@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import {
   DEFAULT_APP_SETTINGS,
+  SESSION_RAIL_WIDTH,
+  TOOL_SIDEBAR_WIDTH,
+  clampSessionRailWidth,
+  clampToolSidebarWidth,
   isToolSidebarVisible,
   normalizeAppSettings,
   toFeatureFlags
@@ -67,6 +71,12 @@ describe('normalizeAppSettings', () => {
     expect(normalizeAppSettings({ showToolSidebar: false }).showToolSidebar).toBe(false)
   })
 
+  it('defaults showTermToolbar to true', () => {
+    expect(DEFAULT_APP_SETTINGS.showTermToolbar).toBe(true)
+    expect(normalizeAppSettings({}).showTermToolbar).toBe(true)
+    expect(normalizeAppSettings({ showTermToolbar: false }).showTermToolbar).toBe(false)
+  })
+
   it('defaults defaultSessionKind to local', () => {
     expect(DEFAULT_APP_SETTINGS.defaultSessionKind).toBe('local')
     expect(normalizeAppSettings({}).defaultSessionKind).toBe('local')
@@ -108,5 +118,26 @@ describe('normalizeAppSettings', () => {
         showToolSidebar: true
       })
     ).toBe(false)
+  })
+
+  it('clamps and defaults panel widths', () => {
+    expect(DEFAULT_APP_SETTINGS.sessionRailWidth).toBe(SESSION_RAIL_WIDTH.default)
+    expect(DEFAULT_APP_SETTINGS.toolSidebarWidth).toBe(TOOL_SIDEBAR_WIDTH.default)
+    expect(normalizeAppSettings({}).sessionRailWidth).toBe(SESSION_RAIL_WIDTH.default)
+    expect(normalizeAppSettings({ sessionRailWidth: 50 }).sessionRailWidth).toBe(
+      SESSION_RAIL_WIDTH.min
+    )
+    expect(normalizeAppSettings({ sessionRailWidth: 9999 }).sessionRailWidth).toBe(
+      SESSION_RAIL_WIDTH.max
+    )
+    expect(normalizeAppSettings({ toolSidebarWidth: 10 }).toolSidebarWidth).toBe(
+      TOOL_SIDEBAR_WIDTH.min
+    )
+    expect(normalizeAppSettings({ toolSidebarWidth: 900 }).toolSidebarWidth).toBe(
+      TOOL_SIDEBAR_WIDTH.max
+    )
+    expect(clampSessionRailWidth(NaN)).toBe(SESSION_RAIL_WIDTH.default)
+    expect(clampToolSidebarWidth(Number.POSITIVE_INFINITY)).toBe(TOOL_SIDEBAR_WIDTH.default)
+    expect(normalizeAppSettings({ sessionRailWidth: 280 }).sessionRailWidth).toBe(280)
   })
 })

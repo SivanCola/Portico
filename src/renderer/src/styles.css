@@ -288,6 +288,7 @@ html[data-platform='win32'] .topbar {
 /* ---- workspace ---- */
 .workspace {
   display: grid;
+  /* Column widths set inline from app settings (resizable panels). */
   grid-template-columns: 200px 1fr 320px;
   height: 100%;
   min-height: 0;
@@ -295,15 +296,75 @@ html[data-platform='win32'] .topbar {
 .workspace.tool-sidebar-collapsed {
   grid-template-columns: 200px 1fr;
 }
-.workspace.tool-sidebar-collapsed .sidebar {
+.workspace.tool-sidebar-collapsed .sidebar-slot {
   display: none;
+}
+
+/* Slots wrap panel + resize handle so drag targets sit on the seam. */
+.session-rail-slot,
+.sidebar-slot {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- panel resize handles ---- */
+.panel-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  z-index: 20;
+  cursor: col-resize;
+  touch-action: none;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+  background: transparent;
+}
+.panel-resize-handle--left {
+  right: -3px;
+}
+.panel-resize-handle--right {
+  left: -3px;
+}
+.panel-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: transparent;
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+.panel-resize-handle:hover::after,
+.panel-resize-handle:focus-visible::after,
+body.panel-resizing .panel-resize-handle::after {
+  background: var(--accent);
+  box-shadow: 0 0 0 1px rgba(68, 147, 248, 0.35);
+}
+.panel-resize-handle:focus-visible {
+  outline: none;
+}
+body.panel-resizing {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+body.panel-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
 }
 
 /* ---- left session rail ---- */
 .session-rail {
   display: flex;
   flex-direction: column;
+  flex: 1;
   min-height: 0;
+  min-width: 0;
   border-right: 1px solid var(--border);
   background: var(--bg-elev);
 }
@@ -516,7 +577,9 @@ html[data-platform='win32'] .topbar {
 .sidebar {
   display: flex;
   flex-direction: column;
+  flex: 1;
   min-height: 0;
+  min-width: 0;
   border-left: 1px solid var(--border);
   background: var(--bg-elev);
 }
@@ -541,6 +604,199 @@ html[data-platform='win32'] .topbar {
 }
 .term-stack .term-host.inactive {
   display: none !important;
+}
+
+/* ---- launch session restore (skeleton + card) ---- */
+.restore-view {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+}
+.restore-skeleton {
+  flex: 1;
+  display: flex;
+  gap: 12px;
+  padding: 18px 16px 24px;
+  font-family: var(--mono);
+  opacity: 0.55;
+  pointer-events: none;
+  user-select: none;
+}
+.restore-skeleton-gutter {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 14px;
+  text-align: right;
+  min-width: 18px;
+  opacity: 0.55;
+}
+.restore-skeleton-lines {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 0;
+  position: relative;
+}
+.restore-skeleton-line {
+  height: 10px;
+  border-radius: 3px;
+  background: linear-gradient(
+    90deg,
+    rgba(68, 147, 248, 0.06) 0%,
+    rgba(68, 147, 248, 0.16) 45%,
+    rgba(68, 147, 248, 0.06) 100%
+  );
+  background-size: 200% 100%;
+  animation: restore-shimmer 1.6s ease-in-out infinite;
+}
+.restore-skeleton-cursor {
+  width: 8px;
+  height: 14px;
+  margin-top: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  opacity: 0.7;
+  animation: restore-cursor 1s steps(1) infinite;
+}
+@keyframes restore-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+@keyframes restore-cursor {
+  0%,
+  49% {
+    opacity: 0.75;
+  }
+  50%,
+  100% {
+    opacity: 0.15;
+  }
+}
+.restore-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(14, 17, 22, 0.35) 0%,
+    rgba(14, 17, 22, 0.72) 70%
+  );
+}
+.restore-card {
+  width: min(380px, 100%);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 22px 20px 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  text-align: center;
+}
+.restore-spinner {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid rgba(68, 147, 248, 0.2);
+  border-top-color: var(--accent);
+  animation: restore-spin 0.75s linear infinite;
+  margin-bottom: 6px;
+}
+@keyframes restore-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.restore-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+.restore-session {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.restore-sub {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.restore-phase {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--accent);
+}
+.restore-progress {
+  width: 100%;
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.restore-progress-track {
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+.restore-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 0.25s ease;
+}
+.restore-progress-fill--indeterminate {
+  width: 40%;
+  animation: restore-progress-slide 1.1s ease-in-out infinite;
+}
+@keyframes restore-progress-slide {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+.restore-progress-label {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.restore-cancel {
+  margin-top: 10px;
+  color: var(--text-dim) !important;
+  font-size: 12px !important;
+}
+.restore-cancel:hover {
+  color: var(--text) !important;
 }
 
 .connect-hub {
@@ -718,32 +974,100 @@ html[data-platform='win32'] .topbar {
 .term-toolbar {
   display: flex;
   align-items: center;
-  gap: 4px;
-  height: 32px;
-  padding: 0 8px;
+  gap: 2px;
+  height: 30px;
+  padding: 0 6px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-elev);
   flex-shrink: 0;
 }
-.term-toolbar-btn {
-  font-size: 12px !important;
-  padding: 2px 8px !important;
-  height: 24px;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
+.term-toolbar-btn.icon-btn {
+  width: 28px;
+  min-width: 28px;
+  height: 26px;
+  padding: 0 4px !important;
+  color: var(--text-dim);
 }
-.term-toolbar-btn .kbd {
+.term-toolbar-btn.icon-btn:hover:not(:disabled) {
+  color: var(--text);
+}
+.term-toolbar-btn.icon-btn:disabled {
+  opacity: 0.4;
+}
+.term-toolbar-image {
+  position: relative;
+  display: inline-flex;
+}
+.term-toolbar-image > .term-toolbar-btn {
+  width: auto;
+  min-width: 32px;
+  gap: 1px;
+  padding: 0 6px !important;
+}
+.term-toolbar-caret {
+  font-size: 9px;
+  line-height: 1;
+  opacity: 0.65;
+  margin-top: 1px;
+}
+.term-toolbar-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 40;
+  min-width: 200px;
+  padding: 4px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev-2);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.term-toolbar-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  padding: 7px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.term-toolbar-menu-item:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+}
+.term-toolbar-menu-item:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.term-toolbar-menu-label {
+  flex: 1;
+  min-width: 0;
+}
+.term-toolbar-menu-kbd {
+  font-family: var(--mono);
   font-size: 10px;
-  opacity: 0.85;
+  color: var(--text-faint);
+  letter-spacing: -0.02em;
 }
 .term-toolbar-spacer {
   flex: 1;
   min-width: 8px;
 }
 .term-toolbar-staged {
+  font-size: 11px !important;
+  height: 24px !important;
+  padding: 0 8px !important;
   color: var(--accent) !important;
-  border-color: rgba(68, 147, 248, 0.35) !important;
+  border: 1px solid rgba(68, 147, 248, 0.35) !important;
+  border-radius: 6px;
 }
 
 /* ---- terminal find bar ---- */
@@ -1705,13 +2029,6 @@ html[data-platform='win32'] .topbar {
   font-family: var(--mono);
   opacity: 0.75;
 }
-.topbar-kbd {
-  font-size: 10px;
-  font-family: var(--mono);
-  letter-spacing: -0.02em;
-  opacity: 0.85;
-}
-
 /* ---- update banner ---- */
 .update-banner {
   position: fixed;

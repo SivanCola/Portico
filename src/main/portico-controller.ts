@@ -516,7 +516,8 @@ class SessionHandle {
       this.host.onSummaryChanged()
       log.info('controller', 'connected', { sessionId: this.id, ...redactTarget(target), cwd: info.initialCwd })
       // No success toast — top bar / session rail already show live connection.
-      void this.maybeEnterTmux('connect')
+      // Await tmux attach so launch-restore UI does not reveal the terminal mid-script.
+      await this.maybeEnterTmux('connect')
       return ok({ connected: true, sessionId: this.id, initialCwd: info.initialCwd })
     } catch (e) {
       log.error('controller', 'connect failed', { sessionId: this.id, ...redactTarget(target), err: e as Error })
@@ -1219,6 +1220,8 @@ class SessionHandle {
         4000,
         this.id
       )
+      // Let remote paint attach / MOTD before callers reveal the terminal.
+      await new Promise((r) => setTimeout(r, 900))
       return ok({ action, session })
     } catch (e) {
       return err('TMUX_ENTER_FAILED', (e as Error).message)
@@ -1886,6 +1889,8 @@ export class PorticoController {
   private restoreOnLaunch = true
   private persistTimer: ReturnType<typeof setTimeout> | null = null
   private restoreStarted = false
+  /** Set by cancelSessionRestore() to stop the sequential restore loop early. */
+  private restoreCancelled = false
   /** Last focused session id (from renderer when available). */
   private activeSessionId: SessionId | null = null
 
@@ -1941,6 +1946,7 @@ export class PorticoController {
   async restoreConnections(): Promise<void> {
     if (this.restoreStarted) return
     this.restoreStarted = true
+    this.restoreCancelled = false
     if (!this.restoreOnLaunch) {
       log.info('controller', 'session restore disabled by preference')
       this.pushSessionsList()
@@ -1958,6 +1964,10 @@ export class PorticoController {
 
     // Sequential to avoid agent/key thrash; small stagger feels calmer.
     for (const h of targets) {
+      if (this.restoreCancelled) {
+        log.info('controller', 'session restore cancelled; skipping remaining')
+        break
+      }
       try {
         const p = h.toPersisted()
         if (p.kind === 'local') {
@@ -1993,10 +2003,29 @@ export class PorticoController {
           err: e as Error
         })
       }
+      if (this.restoreCancelled) break
       await new Promise((r) => setTimeout(r, 200))
     }
     this.pushSessionsList()
     this.schedulePersist()
+  }
+
+  /**
+   * Abort the remaining launch-restore queue. Clears wantsAutoConnect on
+   * sessions that have not connected yet so they stay as manual reconnect.
+   */
+  cancelSessionRestore(): Result<true> {
+    this.restoreCancelled = true
+    for (const h of this.sessions.values()) {
+      const state = h.getConnectionState()
+      if (state.ok && state.value.state === 'disconnected' && h.wantsAutoConnect) {
+        h.wantsAutoConnect = false
+      }
+    }
+    this.schedulePersist()
+    this.pushSessionsList()
+    log.info('controller', 'session restore cancel requested')
+    return ok(true as const)
   }
 
   setRestoreOnLaunch(enabled: boolean): Result<boolean> {

@@ -34,6 +34,11 @@ export interface AppSettings {
    * Also forced off when both image bridge and port forwards are disabled.
    */
   showToolSidebar: boolean
+  /**
+   * Show the slim terminal chrome bar (image actions, find, terminal settings).
+   * Shortcuts and command palette still work when hidden.
+   */
+  showTermToolbar: boolean
   /** Auto-detect Claude/Codex from output (ignored when terminalOnly). */
   enableProviderDetect: boolean
   /** Auto-update checks (main UpdateService). */
@@ -65,11 +70,34 @@ export interface AppSettings {
    * re-attach the last tmux session for each tab.
    */
   restoreSessionsOnLaunch: boolean
+  /** Left session rail width in px (user-draggable). */
+  sessionRailWidth: number
+  /** Right tool sidebar width in px (user-draggable). */
+  toolSidebarWidth: number
 }
 
 export const APP_SETTINGS_KEY = 'portico.appSettings'
 /** Bump when shape changes so normalize can migrate. */
-export const APP_SETTINGS_VERSION = 8
+export const APP_SETTINGS_VERSION = 10
+
+/** Left session rail drag bounds + default. */
+export const SESSION_RAIL_WIDTH = { min: 140, max: 420, default: 200 } as const
+/** Right tool sidebar drag bounds + default. */
+export const TOOL_SIDEBAR_WIDTH = { min: 240, max: 560, default: 320 } as const
+
+export function clampSessionRailWidth(n: number): number {
+  if (!Number.isFinite(n)) return SESSION_RAIL_WIDTH.default
+  return Math.round(
+    Math.min(SESSION_RAIL_WIDTH.max, Math.max(SESSION_RAIL_WIDTH.min, n))
+  )
+}
+
+export function clampToolSidebarWidth(n: number): number {
+  if (!Number.isFinite(n)) return TOOL_SIDEBAR_WIDTH.default
+  return Math.round(
+    Math.min(TOOL_SIDEBAR_WIDTH.max, Math.max(TOOL_SIDEBAR_WIDTH.min, n))
+  )
+}
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   locale: 'system',
@@ -80,13 +108,16 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   enableImageBridge: true,
   enablePortForwards: true,
   showToolSidebar: true,
+  showTermToolbar: true,
   enableProviderDetect: true,
   enableAutoUpdate: true,
   tmuxMode: 'off',
   tmuxSessionName: 'portico',
   syncRemoteClipboard: true,
   defaultSessionKind: 'local',
-  restoreSessionsOnLaunch: true
+  restoreSessionsOnLaunch: true,
+  sessionRailWidth: SESSION_RAIL_WIDTH.default,
+  toolSidebarWidth: TOOL_SIDEBAR_WIDTH.default
 }
 
 export function loadAppSettings(): AppSettings {
@@ -154,6 +185,7 @@ export function normalizeAppSettings(
     enableImageBridge,
     enablePortForwards,
     showToolSidebar: partial.showToolSidebar ?? DEFAULT_APP_SETTINGS.showToolSidebar,
+    showTermToolbar: partial.showTermToolbar ?? DEFAULT_APP_SETTINGS.showTermToolbar,
     enableProviderDetect,
     enableAutoUpdate: partial.enableAutoUpdate ?? DEFAULT_APP_SETTINGS.enableAutoUpdate,
     tmuxMode,
@@ -167,7 +199,17 @@ export function normalizeAppSettings(
         ? partial.defaultSessionKind
         : DEFAULT_APP_SETTINGS.defaultSessionKind,
     restoreSessionsOnLaunch:
-      partial.restoreSessionsOnLaunch ?? DEFAULT_APP_SETTINGS.restoreSessionsOnLaunch
+      partial.restoreSessionsOnLaunch ?? DEFAULT_APP_SETTINGS.restoreSessionsOnLaunch,
+    sessionRailWidth: clampSessionRailWidth(
+      typeof partial.sessionRailWidth === 'number'
+        ? partial.sessionRailWidth
+        : DEFAULT_APP_SETTINGS.sessionRailWidth
+    ),
+    toolSidebarWidth: clampToolSidebarWidth(
+      typeof partial.toolSidebarWidth === 'number'
+        ? partial.toolSidebarWidth
+        : DEFAULT_APP_SETTINGS.toolSidebarWidth
+    )
   }
 }
 

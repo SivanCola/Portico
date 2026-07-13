@@ -35,6 +35,7 @@ const api: PorticoApi = {
   getRestoreOnLaunch: () => ipcRenderer.invoke(IPC.SESSION_RESTORE_GET),
   setRestoreOnLaunch: (enabled) => ipcRenderer.invoke(IPC.SESSION_RESTORE_SET, enabled),
   restoreConnections: () => ipcRenderer.invoke(IPC.SESSION_RESTORE_NOW),
+  cancelSessionRestore: () => ipcRenderer.invoke(IPC.SESSION_RESTORE_CANCEL),
 
   // Lifecycle
   connect: (sessionId, target) => ipcRenderer.invoke(IPC.CONNECT, { sessionId, target }),

@@ -137,7 +137,9 @@ export const IPC = {
   SESSION_RESTORE_GET: 'portico:session:restoreGet',
   SESSION_RESTORE_SET: 'portico:session:restoreSet',
   SESSION_SET_ACTIVE: 'portico:session:setActive',
-  SESSION_RESTORE_NOW: 'portico:session:restoreNow'
+  SESSION_RESTORE_NOW: 'portico:session:restoreNow',
+  /** Cancel remaining auto-connects in a launch restore wave. */
+  SESSION_RESTORE_CANCEL: 'portico:session:restoreCancel'
 } as const
 
 /** L2 capability toggles — must never tear down the SSH PTY. */
@@ -307,6 +309,8 @@ export interface PorticoApi {
   setRestoreOnLaunch(enabled: boolean): Promise<Result<boolean>>
   /** Trigger auto-reconnect of saved sessions (once per process). */
   restoreConnections(): Promise<Result<true>>
+  /** Stop remaining auto-connects during a launch restore wave. */
+  cancelSessionRestore(): Promise<Result<true>>
 
   // Lifecycle
   connect(sessionId: SessionId, target: SshTarget): Promise<Result<ConnectResult>>

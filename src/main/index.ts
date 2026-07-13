@@ -406,6 +406,7 @@ function registerIpc(c: PorticoController): void {
     await c.restoreConnections()
     return ok(true as const)
   })
+  handle(IPC.SESSION_RESTORE_CANCEL, () => c.cancelSessionRestore())
 
   // Connection
   handleArg<{ sessionId: SessionId; target: SshTarget }, Result<ConnectResult>>(

@@ -17,7 +17,9 @@ export type MessageKey =
   | 'topbar.toggleToolSidebar'
   | 'topbar.hideSidebar'
   | 'topbar.showSidebar'
+  | 'toolbar.aria'
   | 'toolbar.pasteImage'
+  | 'toolbar.pasteImageKbd'
   | 'toolbar.orFileDropFind'
   | 'toolbar.terminalOnlyFind'
   | 'toolbar.unavailableReconnect'
@@ -28,6 +30,8 @@ export type MessageKey =
   | 'toolbar.file'
   | 'toolbar.find'
   | 'toolbar.findHint'
+  | 'toolbar.imageMenu'
+  | 'toolbar.imageMenuHint'
   | 'toolbar.stagedCount'
   | 'toolbar.stagedHint'
   | 'reconnect.banner'
@@ -45,6 +49,8 @@ export type MessageKey =
   | 'rail.renamePrompt'
   | 'rail.renameHint'
   | 'rail.dragHint'
+  | 'rail.resizeHandle'
+  | 'sidebar.resizeHandle'
   | 'rail.unread'
   | 'palette.newSession'
   | 'palette.newSessionHint'
@@ -68,6 +74,21 @@ export type MessageKey =
   | 'settings.general.kindAsk'
   | 'settings.general.restoreSessions'
   | 'settings.general.restoreSessionsHint'
+  | 'restore.title'
+  | 'restore.bootstrapping'
+  | 'restore.kindLocal'
+  | 'restore.kindSsh'
+  | 'restore.progress'
+  | 'restore.cancel'
+  | 'restore.phaseWaiting'
+  | 'restore.phaseStarting'
+  | 'restore.phaseResolving'
+  | 'restore.phaseTcp'
+  | 'restore.phaseAuth'
+  | 'restore.phaseShell'
+  | 'restore.phaseHome'
+  | 'restore.phaseReady'
+  | 'restore.phaseTmux'
   | 'connect.host'
   | 'connect.hostPlaceholder'
   | 'connect.user'
@@ -120,6 +141,8 @@ export type MessageKey =
   | 'settings.terminal.copyOnSelectHint'
   | 'settings.terminal.webgl'
   | 'settings.terminal.webglHint'
+  | 'settings.terminal.showTermToolbar'
+  | 'settings.terminal.showTermToolbarHint'
   | 'settings.terminal.reset'
   | 'settings.tmux.lead'
   | 'settings.tmux.syncClipboard'
@@ -276,7 +299,9 @@ const en: Catalog = {
   'topbar.toggleToolSidebar': 'Toggle tool sidebar  ·  ⌘\\',
   'topbar.hideSidebar': 'Hide panel',
   'topbar.showSidebar': 'Show panel',
-  'toolbar.pasteImage': 'Stage',
+  'toolbar.aria': 'Terminal tools',
+  'toolbar.pasteImage': 'Stage image',
+  'toolbar.pasteImageKbd': '⌘⇧V',
   'toolbar.orFileDropFind': 'or File… / drop · ⌘F find',
   'toolbar.terminalOnlyFind': 'Terminal only · ⌘F find',
   'toolbar.unavailableReconnect': 'unavailable while reconnecting',
@@ -284,9 +309,11 @@ const en: Catalog = {
   'toolbar.providerAutoBadge': 'auto',
   'toolbar.providerAutoDetected': 'Auto-detected: {name}',
   'toolbar.interactiveRepl': ' · interactive REPL',
-  'toolbar.file': 'File…',
+  'toolbar.file': 'Upload image…',
   'toolbar.find': 'Find',
   'toolbar.findHint': 'Find in terminal  ·  ⌘F',
+  'toolbar.imageMenu': 'Image tools',
+  'toolbar.imageMenuHint': 'Stage or upload images for the remote AI',
   'toolbar.stagedCount': '{n} staged',
   'toolbar.stagedHint': 'Open image shelf to review and send (Enter)',
   'reconnect.banner': 'Connection lost. Reconnecting (attempt {attempt}/10)',
@@ -304,6 +331,8 @@ const en: Catalog = {
   'rail.renamePrompt': 'Session title',
   'rail.renameHint': 'Double-click to rename (stops auto-title from tmux/Claude)',
   'rail.dragHint': 'Drag handle to reorder',
+  'rail.resizeHandle': 'Resize session list · double-click to reset',
+  'sidebar.resizeHandle': 'Resize tool sidebar · double-click to reset',
   'rail.unread': 'Unread output',
   'palette.newSession': 'New session',
   'palette.newSessionHint': 'Open a draft connection tab',
@@ -329,6 +358,21 @@ const en: Catalog = {
   'settings.general.restoreSessions': 'Restore sessions on launch',
   'settings.general.restoreSessionsHint':
     'Reopen previous tabs and reconnect SSH (key/agent) + last tmux session. Passwords are never stored.',
+  'restore.title': 'Restoring session',
+  'restore.bootstrapping': 'Loading previous tabs…',
+  'restore.kindLocal': 'Local shell',
+  'restore.kindSsh': 'SSH host',
+  'restore.progress': '{done} of {total} reconnected · this tab {index}/{total}',
+  'restore.cancel': 'Cancel auto-connect',
+  'restore.phaseWaiting': 'Waiting in queue…',
+  'restore.phaseStarting': 'Starting shell…',
+  'restore.phaseResolving': 'Resolving host…',
+  'restore.phaseTcp': 'Opening TCP…',
+  'restore.phaseAuth': 'Authenticating…',
+  'restore.phaseShell': 'Opening shell…',
+  'restore.phaseHome': 'Preparing home…',
+  'restore.phaseReady': 'Almost ready…',
+  'restore.phaseTmux': 'Entering tmux / settling shell…',
   'connect.host': 'Host',
   'connect.hostPlaceholder': 'hostname or SSH alias',
   'connect.user': 'User',
@@ -384,6 +428,9 @@ const en: Catalog = {
   'settings.terminal.copyOnSelectHint': 'Automatically copy selected text to the clipboard',
   'settings.terminal.webgl': 'WebGL renderer',
   'settings.terminal.webglHint': 'Faster full-screen TUI; reconnect if the GPU context is lost',
+  'settings.terminal.showTermToolbar': 'Show terminal toolbar',
+  'settings.terminal.showTermToolbarHint':
+    'Slim bar above the terminal (image tools, find). Shortcuts still work when hidden.',
   'settings.terminal.reset': 'Reset terminal defaults',
   'settings.tmux.lead':
     'Reuse remote sessions with tmux so SSH disconnects do not kill Claude or long jobs. Portico only shells out to the remote tmux CLI — it does not replace tmux.',
@@ -551,7 +598,9 @@ const zhCN: Catalog = {
   'topbar.toggleToolSidebar': '切换右侧工具栏  ·  ⌘\\',
   'topbar.hideSidebar': '隐藏面板',
   'topbar.showSidebar': '显示面板',
-  'toolbar.pasteImage': '暂存',
+  'toolbar.aria': '终端工具',
+  'toolbar.pasteImage': '暂存图片',
+  'toolbar.pasteImageKbd': '⌘⇧V',
   'toolbar.orFileDropFind': '或 文件… / 拖放 · ⌘F 查找',
   'toolbar.terminalOnlyFind': '仅终端 · ⌘F 查找',
   'toolbar.unavailableReconnect': '重连期间不可用',
@@ -559,9 +608,11 @@ const zhCN: Catalog = {
   'toolbar.providerAutoBadge': '自动',
   'toolbar.providerAutoDetected': '已自动识别：{name}',
   'toolbar.interactiveRepl': ' · 交互 REPL',
-  'toolbar.file': '文件…',
+  'toolbar.file': '上传图片…',
   'toolbar.find': '查找',
   'toolbar.findHint': '在终端中查找  ·  ⌘F',
+  'toolbar.imageMenu': '图片工具',
+  'toolbar.imageMenuHint': '暂存或上传图片给远端 AI',
   'toolbar.stagedCount': '待发送 {n}',
   'toolbar.stagedHint': '打开图片货架查看并发送（回车）',
   'reconnect.banner': '连接已断开。正在重连（第 {attempt}/10 次）',
@@ -579,6 +630,8 @@ const zhCN: Catalog = {
   'rail.renamePrompt': '会话标题',
   'rail.renameHint': '双击重命名（之后不再随 tmux/Claude 自动改名）',
   'rail.dragHint': '按住左侧把手拖拽排序',
+  'rail.resizeHandle': '拖动调整会话列表宽度 · 双击恢复默认',
+  'sidebar.resizeHandle': '拖动调整工具栏宽度 · 双击恢复默认',
   'rail.unread': '有新输出',
   'palette.newSession': '新建会话',
   'palette.newSessionHint': '打开一个待连接的会话标签',
@@ -604,6 +657,21 @@ const zhCN: Catalog = {
   'settings.general.restoreSessions': '启动时恢复会话',
   'settings.general.restoreSessionsHint':
     '重新打开上次的标签，自动 SSH（密钥/agent）并 attach 上次的 tmux。不会保存密码。',
+  'restore.title': '正在恢复会话',
+  'restore.bootstrapping': '正在加载上次的标签…',
+  'restore.kindLocal': '本机 Shell',
+  'restore.kindSsh': 'SSH 主机',
+  'restore.progress': '已恢复 {done}/{total} · 当前标签 {index}/{total}',
+  'restore.cancel': '取消自动连接',
+  'restore.phaseWaiting': '排队等待…',
+  'restore.phaseStarting': '正在启动 Shell…',
+  'restore.phaseResolving': '正在解析主机…',
+  'restore.phaseTcp': '正在建立 TCP…',
+  'restore.phaseAuth': '正在认证…',
+  'restore.phaseShell': '正在打开 Shell…',
+  'restore.phaseHome': '正在准备环境…',
+  'restore.phaseReady': '即将就绪…',
+  'restore.phaseTmux': '正在进入 tmux / 整理 Shell…',
   'connect.host': '主机',
   'connect.hostPlaceholder': '主机名或 SSH 别名',
   'connect.user': '用户',
@@ -659,6 +727,9 @@ const zhCN: Catalog = {
   'settings.terminal.copyOnSelectHint': '选中文本后自动复制到剪贴板',
   'settings.terminal.webgl': 'WebGL 渲染',
   'settings.terminal.webglHint': '全屏 TUI 更流畅；GPU 上下文丢失时请重连',
+  'settings.terminal.showTermToolbar': '显示终端工具条',
+  'settings.terminal.showTermToolbarHint':
+    '终端上方的窄条（图片工具、查找）。隐藏后仍可用快捷键与命令面板。',
   'settings.terminal.reset': '恢复终端默认',
   'settings.tmux.lead':
     '用远端 tmux 复用会话，SSH 断开不会杀掉 Claude 或长任务。Portico 只调用远端 tmux CLI，并不替代 tmux。',

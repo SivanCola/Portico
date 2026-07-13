@@ -279,6 +279,18 @@ export function SettingsCenter({
               <section className="settings-section">
                 <p className="settings-lead">{t('settings.terminal.lead')}</p>
 
+                <label className="settings-check">
+                  <input
+                    type="checkbox"
+                    checked={appSettings.showTermToolbar}
+                    onChange={(e) => setApp('showTermToolbar', e.target.checked)}
+                  />
+                  <span>
+                    {t('settings.terminal.showTermToolbar')}
+                    <em>{t('settings.terminal.showTermToolbarHint')}</em>
+                  </span>
+                </label>
+
                 <label className="settings-field">
                   <span>{t('settings.terminal.theme')}</span>
                   <select

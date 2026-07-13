@@ -23,11 +23,14 @@ import type {
 import type { ConnStatePayload, StatusPayload } from '@shared/ipc.js'
 import type { DetectedPort } from '@shared/port-detect.js'
 import { SessionConnectHub } from './components/SessionConnectHub.js'
+import { RestoringSessionView } from './components/RestoringSessionView.js'
+import { TermToolbar } from './components/TermToolbar.js'
 import { Terminal } from './components/Terminal.js'
 import { ImageShelf } from './components/ImageShelf.js'
 import { PortForwards } from './components/PortForwards.js'
 import { SessionRail } from './components/SessionRail.js'
-import { GearIcon, PanelIcon } from './components/icons.js'
+import { PanelResizeHandle } from './components/PanelResizeHandle.js'
+import { CommandPaletteIcon, PanelIcon } from './components/icons.js'
 import { CommandPalette, type PaletteAction } from './components/CommandPalette.js'
 import { SettingsCenter, type SettingsSection } from './components/SettingsCenter.js'
 import {
@@ -42,6 +45,10 @@ import {
   isToolSidebarVisible,
   toFeatureFlags,
   toTmuxPrefs,
+  clampSessionRailWidth,
+  clampToolSidebarWidth,
+  SESSION_RAIL_WIDTH,
+  TOOL_SIDEBAR_WIDTH,
   type AppSettings
 } from './lib/app-settings.js'
 import {
@@ -132,6 +139,19 @@ function AppInner({
   const [termSettings, setTermSettings] = useState<TerminalSettings>(() => loadTerminalSettings())
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general')
+  /**
+   * Launch restore wave: while active, restorable tabs show RestoringSessionView
+   * instead of the "open session" chooser (avoids ambiguous empty-state UX).
+   * Optimistic start when preference is on — cleared if nothing to restore.
+   */
+  const [restoreWave, setRestoreWave] = useState<{
+    active: boolean
+    sessionIds: SessionId[]
+  } | null>(() =>
+    loadAppSettings().restoreSessionsOnLaunch
+      ? { active: true, sessionIds: [] }
+      : null
+  )
   const statusTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const providerFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   /** Next provider change from user click — skip auto-detect flash. */
@@ -214,6 +234,44 @@ function AppInner({
     [syncMainPrefs, setAppSettings]
   )
 
+  /** Live layout width while dragging — state only (no localStorage thrash). */
+  const setSessionRailWidthLive = useCallback((width: number) => {
+    const w = clampSessionRailWidth(width)
+    setAppSettings((prev) =>
+      prev.sessionRailWidth === w ? prev : { ...prev, sessionRailWidth: w }
+    )
+  }, [])
+
+  const setToolSidebarWidthLive = useCallback((width: number) => {
+    const w = clampToolSidebarWidth(width)
+    setAppSettings((prev) =>
+      prev.toolSidebarWidth === w ? prev : { ...prev, toolSidebarWidth: w }
+    )
+  }, [])
+
+  /** Persist panel width after drag ends / keyboard / double-click reset. */
+  const commitSessionRailWidth = useCallback((width: number) => {
+    setAppSettings((prev) => {
+      const next = normalizeAppSettings({
+        ...prev,
+        sessionRailWidth: clampSessionRailWidth(width)
+      })
+      saveAppSettings(next)
+      return next
+    })
+  }, [])
+
+  const commitToolSidebarWidth = useCallback((width: number) => {
+    setAppSettings((prev) => {
+      const next = normalizeAppSettings({
+        ...prev,
+        toolSidebarWidth: clampToolSidebarWidth(width)
+      })
+      saveAppSettings(next)
+      return next
+    })
+  }, [])
+
   useEffect(() => {
     void syncMainPrefs(loadAppSettings())
   }, [syncMainPrefs])
@@ -280,7 +338,10 @@ function AppInner({
   useEffect(() => {
     void (async () => {
       const r = await window.portico.listSessions()
-      if (!r.ok || r.value.length === 0) return
+      if (!r.ok || r.value.length === 0) {
+        setRestoreWave(null)
+        return
+      }
       const merged = mergeSessionList([], r.value.map((s) => ({ ...s, unread: false })))
       setSessionList(merged)
       const firstId = merged[0]?.id ?? null
@@ -303,13 +364,25 @@ function AppInner({
       })
 
       const settings = loadAppSettings()
-      const hasRestorable = merged.some((s) => s.kind === 'local' || s.kind === 'ssh')
+      // Tabs that were previously connected (have kind) — candidates for auto-restore.
+      const restorableIds = merged
+        .filter((s) => s.kind === 'local' || s.kind === 'ssh')
+        .map((s) => s.id)
+      const hasRestorable = restorableIds.length > 0
 
       // Restore saved SSH/tmux tabs (key/agent only). Main hydrates the list already.
       if (settings.restoreSessionsOnLaunch && hasRestorable) {
+        setRestoreWave({ active: true, sessionIds: restorableIds })
         await window.portico.setRestoreOnLaunch(true)
-        await window.portico.restoreConnections()
-        // Refresh UI after reconnects start
+        try {
+          await window.portico.restoreConnections()
+          // Brief beat so the last tab's terminal paints under the overlay
+          // before we lift it (avoids a one-frame flash of mid-attach output).
+          await new Promise((r) => setTimeout(r, 250))
+        } finally {
+          setRestoreWave((w) => (w ? { ...w, active: false } : null))
+        }
+        // Refresh UI after reconnects complete
         const again = await window.portico.listSessions()
         if (again.ok) {
           setSessionList((prev) => mergeSessionList(prev, again.value))
@@ -317,17 +390,22 @@ function AppInner({
             const next = { ...prev }
             for (const s of again.value) {
               if (!next[s.id]) next[s.id] = emptyUi({ connState: s.state })
-              else next[s.id] = {
-                ...next[s.id],
-                connState: s.state,
-                everLive: next[s.id].everLive || s.state === 'connected' || s.state === 'connecting'
-              }
+              else
+                next[s.id] = {
+                  ...next[s.id],
+                  connState: s.state,
+                  everLive:
+                    next[s.id].everLive || s.state === 'connected' || s.state === 'connecting'
+                }
             }
             return next
           })
         }
         return
       }
+
+      // Nothing to restore — clear optimistic wave so the connect hub can show.
+      setRestoreWave(null)
 
       // Cold start: open local shell when preference is local and only a draft exists.
       const pref = settings.defaultSessionKind
@@ -1215,7 +1293,10 @@ function AppInner({
     ]
   )
 
-  // Sessions that need a kept-alive Terminal instance
+  // Sessions that need a kept-alive Terminal instance.
+  // Keep mounting during restore (hidden under the overlay) so scrollback /
+  // prompt are ready when the wave ends — users never see live attach typing
+  // because showRestoring covers the pane until connect+tmux fully settle.
   const liveSessionIds = useMemo(
     () =>
       sessionList
@@ -1233,11 +1314,56 @@ function AppInner({
     [sessionList, byId]
   )
 
+  const activeSummary = useMemo(
+    () => sessionList.find((s) => s.id === activeSessionId) ?? null,
+    [sessionList, activeSessionId]
+  )
+
+  /**
+   * True for the whole launch-restore wave, including after SSH is "connected"
+   * while tmux attach / shell settle still runs under the overlay.
+   * Draft tabs created mid-wave (no kind, not in restore set) are excluded.
+   */
+  const showRestoring = useMemo(() => {
+    if (!restoreWave?.active) return false
+    // Still hydrating list / optimistic cover — always show restore chrome.
+    if (restoreWave.sessionIds.length === 0) return true
+    if (!activeSessionId) return true
+    if (restoreWave.sessionIds.includes(activeSessionId)) return true
+    // Known draft (+ session): allow connect hub.
+    if (activeSummary && !activeSummary.kind) return false
+    // Unknown / restorable-looking tab during wave: keep covering.
+    return !!activeSummary?.kind
+  }, [restoreWave, activeSessionId, activeSummary])
+
+  const restoreProgress = useMemo(() => {
+    if (!restoreWave) {
+      return { total: 0, done: 0, index: 1 }
+    }
+    const total = restoreWave.sessionIds.length
+    const done = restoreWave.sessionIds.filter((id) => {
+      const ui = byId[id]
+      // Only count fully connected — connecting still in flight.
+      return ui?.connState === 'connected'
+    }).length
+    const idx = activeSessionId
+      ? Math.max(1, restoreWave.sessionIds.indexOf(activeSessionId) + 1)
+      : 1
+    return { total, done, index: idx }
+  }, [restoreWave, byId, activeSessionId])
+
+  const cancelRestoreWave = useCallback(() => {
+    setRestoreWave((w) => (w ? { ...w, active: false } : null))
+    void window.portico.cancelSessionRestore()
+  }, [])
+
+  // Draft chooser / reconnect form — never under an active restore cover.
   const showForm =
-    !activeSessionId ||
-    !activeUi ||
-    activeUi.connState === 'disconnected' ||
-    (activeUi.connState === 'connecting' && !activeUi.everLive)
+    !showRestoring &&
+    (!activeSessionId ||
+      !activeUi ||
+      activeUi.connState === 'disconnected' ||
+      (activeUi.connState === 'connecting' && !activeUi.everLive))
 
   return (
     <div className={`app ${dragOver ? 'drag-over' : ''}`}>
@@ -1253,19 +1379,50 @@ function AppInner({
         toolSidebarOpen={toolSidebarOpen}
         appInfo={appInfo}
       />
-      <div className={`workspace ${toolSidebarOpen ? '' : 'tool-sidebar-collapsed'}`.trim()}>
-        <SessionRail
-          sessions={sessionList}
-          activeId={activeSessionId}
-          onSelect={selectSession}
-          onCreate={() => void createSession()}
-          onClose={(id) => void closeSession(id)}
-          onRename={(id, title) => void renameSession(id, title)}
-          onReorder={reorderSessions}
-          onOpenSettings={() => openSettings('general')}
-        />
+      <div
+        className={`workspace ${toolSidebarOpen ? '' : 'tool-sidebar-collapsed'}`.trim()}
+        style={{
+          gridTemplateColumns: toolSidebarOpen
+            ? `${appSettings.sessionRailWidth}px 1fr ${appSettings.toolSidebarWidth}px`
+            : `${appSettings.sessionRailWidth}px 1fr`
+        }}
+      >
+        <div className="session-rail-slot">
+          <SessionRail
+            sessions={sessionList}
+            activeId={activeSessionId}
+            onSelect={selectSession}
+            onCreate={() => void createSession()}
+            onClose={(id) => void closeSession(id)}
+            onRename={(id, title) => void renameSession(id, title)}
+            onReorder={reorderSessions}
+            onOpenSettings={() => openSettings('general')}
+          />
+          <PanelResizeHandle
+            side="left"
+            value={appSettings.sessionRailWidth}
+            min={SESSION_RAIL_WIDTH.min}
+            max={SESSION_RAIL_WIDTH.max}
+            defaultWidth={SESSION_RAIL_WIDTH.default}
+            onLiveChange={setSessionRailWidthLive}
+            onCommit={commitSessionRailWidth}
+            label={t('rail.resizeHandle')}
+          />
+        </div>
         <div className="terminal-pane">
-          {/* Form for draft / connecting first time — keep Terminals mounted underneath. */}
+          {/* Launch restore: skeleton + progress (covers hub for the whole wave). */}
+          {showRestoring && (
+            <RestoringSessionView
+              summary={activeSummary}
+              progressIndex={restoreProgress.index}
+              progressTotal={restoreProgress.total}
+              progressDone={restoreProgress.done}
+              phase={connectPhase}
+              connState={connState}
+              onCancel={cancelRestoreWave}
+            />
+          )}
+          {/* Form for draft / intentional disconnect — keep Terminals mounted underneath. */}
           {showForm && (
             <SessionConnectHub
               onConnectSsh={connect}
@@ -1274,7 +1431,7 @@ function AppInner({
               preferSsh={appSettings.defaultSessionKind === 'ssh'}
             />
           )}
-          {!showForm && connState === 'reconnecting' && reconnectInfo && (
+          {!showForm && !showRestoring && connState === 'reconnecting' && reconnectInfo && (
             <div className="reconnect-banner">
               <span>
                 {t('reconnect.banner', { attempt: reconnectInfo.attempt })}
@@ -1287,110 +1444,80 @@ function AppInner({
               </button>
             </div>
           )}
-          {!showForm && (
-            <div className="term-toolbar">
-              {appSettings.enableImageBridge && (
-                <>
-                  <button
-                    type="button"
-                    className="btn ghost term-toolbar-btn"
-                    disabled={connState !== 'connected'}
-                    onClick={() => void pasteImage()}
-                    title={t('palette.pasteImageHint')}
-                  >
-                    <span className="kbd">⌘⇧V</span> {t('toolbar.pasteImage')}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn ghost term-toolbar-btn"
-                    disabled={connState !== 'connected'}
-                    onClick={() => void pickImageFile()}
-                    title={t('palette.uploadFileHint')}
-                  >
-                    {t('toolbar.file')}
-                  </button>
-                </>
-              )}
-              <button
-                type="button"
-                className="btn ghost term-toolbar-btn"
-                onClick={() => setFindNonce((n) => n + 1)}
-                title={t('toolbar.findHint')}
-              >
-                <span className="kbd">⌘F</span> {t('toolbar.find')}
-              </button>
-              <span className="term-toolbar-spacer" />
-              {appSettings.enableImageBridge &&
-                connState === 'connected' &&
-                shelf.filter((i) => i.status === 'staged').length > 0 && (
-                  <button
-                    type="button"
-                    className="btn ghost term-toolbar-btn term-toolbar-staged"
-                    onClick={() => {
-                      if (!isToolSidebarVisible(appSettings)) {
-                        updateAppSettings({ ...appSettings, showToolSidebar: true })
-                      }
-                    }}
-                    title={t('toolbar.stagedHint')}
-                  >
-                    {t('toolbar.stagedCount', {
-                      n: shelf.filter((i) => i.status === 'staged').length
-                    })}
-                  </button>
-                )}
-              <button
-                type="button"
-                className="btn ghost icon-btn term-toolbar-btn"
-                onClick={() => openSettings('terminal')}
-                title={t('palette.terminalSettingsHint')}
-                aria-label={t('palette.terminalSettings')}
-              >
-                <GearIcon size={14} />
-              </button>
-            </div>
+          {!showForm && !showRestoring && appSettings.showTermToolbar && (
+            <TermToolbar
+              imageBridge={appSettings.enableImageBridge}
+              connected={connState === 'connected'}
+              stagedCount={shelf.filter((i) => i.status === 'staged').length}
+              onStageClipboard={() => void pasteImage()}
+              onPickFile={() => void pickImageFile()}
+              onFind={() => setFindNonce((n) => n + 1)}
+              onOpenStaged={() => {
+                if (!isToolSidebarVisible(appSettings)) {
+                  updateAppSettings({ ...appSettings, showToolSidebar: true })
+                }
+              }}
+            />
           )}
           {/* Always keep live terminals mounted so switching to a draft doesn't drop scrollback. */}
-          <div className="term-stack" style={showForm ? { display: 'none' } : undefined}>
+          <div
+            className="term-stack"
+            style={showForm || showRestoring ? { display: 'none' } : undefined}
+          >
             {liveSessionIds.map((id) => (
               <Terminal
                 key={id}
                 sessionId={id}
-                active={!showForm && id === activeSessionId}
+                active={!showForm && !showRestoring && id === activeSessionId}
                 connState={byId[id]?.connState ?? 'disconnected'}
                 settings={termSettings}
                 onPasteImage={() => void pasteImage()}
-                findNonce={!showForm && id === activeSessionId ? findNonce : 0}
+                findNonce={
+                  !showForm && !showRestoring && id === activeSessionId ? findNonce : 0
+                }
               />
             ))}
           </div>
         </div>
         {toolSidebarOpen && (
-          <div className="sidebar">
-            {appSettings.enableImageBridge ? (
-              <ImageShelf
-                items={shelf}
-                defaultPrompt={appSettings.defaultPastePrompt}
-                enabled={connState === 'connected'}
-                committing={committing}
-                onRepaste={repaste}
-                onRetry={retryFailed}
-                onRemove={removeShelfItem}
-                onCopyPath={copyPath}
-                onClear={clearShelf}
-                onPickFile={pickImageFile}
-                onCommitStaged={(p) => void commitStaged(p)}
-              />
-            ) : null}
-            {appSettings.enablePortForwards && activeSessionId ? (
-              <PortForwards
-                sessionId={activeSessionId}
-                forwards={portForwards}
-                detected={detectedPorts}
-                connected={connState === 'connected'}
-                enabled
-                expandRequest={pfExpandRequest}
-              />
-            ) : null}
+          <div className="sidebar-slot">
+            <PanelResizeHandle
+              side="right"
+              value={appSettings.toolSidebarWidth}
+              min={TOOL_SIDEBAR_WIDTH.min}
+              max={TOOL_SIDEBAR_WIDTH.max}
+              defaultWidth={TOOL_SIDEBAR_WIDTH.default}
+              onLiveChange={setToolSidebarWidthLive}
+              onCommit={commitToolSidebarWidth}
+              label={t('sidebar.resizeHandle')}
+            />
+            <div className="sidebar">
+              {appSettings.enableImageBridge ? (
+                <ImageShelf
+                  items={shelf}
+                  defaultPrompt={appSettings.defaultPastePrompt}
+                  enabled={connState === 'connected'}
+                  committing={committing}
+                  onRepaste={repaste}
+                  onRetry={retryFailed}
+                  onRemove={removeShelfItem}
+                  onCopyPath={copyPath}
+                  onClear={clearShelf}
+                  onPickFile={pickImageFile}
+                  onCommitStaged={(p) => void commitStaged(p)}
+                />
+              ) : null}
+              {appSettings.enablePortForwards && activeSessionId ? (
+                <PortForwards
+                  sessionId={activeSessionId}
+                  forwards={portForwards}
+                  detected={detectedPorts}
+                  connected={connState === 'connected'}
+                  enabled
+                  expandRequest={pfExpandRequest}
+                />
+              ) : null}
+            </div>
           </div>
         )}
       </div>
@@ -1563,7 +1690,7 @@ function TopBar({
           title={t('topbar.commandPalette')}
           aria-label={t('topbar.commandPalette')}
         >
-          <span className="topbar-kbd">⌘⇧P</span>
+          <CommandPaletteIcon size={15} />
         </button>
         {isActive && (
           <button type="button" className="btn ghost danger" onClick={onDisconnect}>
