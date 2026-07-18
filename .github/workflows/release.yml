@@ -53,7 +53,9 @@ jobs:
             platform: mac
           - os: ubuntu-latest
             platform: linux
-          - os: windows-latest
+          # windows-latest currently ships VS 18; electron-builder's bundled
+          # node-gyp cannot detect it for node-pty rebuild. Pin 2022 (VS 17).
+          - os: windows-2022
             platform: win
 
     runs-on: ${{ matrix.os }}
@@ -81,8 +83,13 @@ jobs:
       - name: Setup MSVC build tools (Windows)
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
       - run: npm ci
+        env:
+          # Help node-gyp pick VS 2022 on windows-2022 runners.
+          npm_config_msvs_version: '2022'
 
       - name: Typecheck
         run: npm run typecheck
