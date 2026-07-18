@@ -77,6 +77,11 @@ jobs:
         with:
           python-version: '3.11'
 
+      # electron-rebuild/node-gyp needs MSVC on the PATH for node-pty.
+      - name: Setup MSVC build tools (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
       - run: npm ci
 
       - name: Typecheck
