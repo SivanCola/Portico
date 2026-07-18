@@ -71,10 +71,10 @@ jobs:
           node-version: 20
           cache: npm
 
-      # node-gyp (node-pty rebuild) imports distutils; system Python on
-      # macos-latest is 3.12+ without distutils. Pin 3.11 for rebuild.
-      - name: Setup Python 3.11 for node-gyp (macOS)
-        if: runner.os == 'macOS'
+      # node-gyp (node-pty rebuild) imports distutils; Python 3.12+ removed it.
+      # Pin 3.11 on macOS + Windows so electron-rebuild can compile node-pty.
+      - name: Setup Python 3.11 for node-gyp
+        if: runner.os == 'macOS' || runner.os == 'Windows'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -90,6 +90,15 @@ jobs:
         env:
           # Help node-gyp pick VS 2022 on windows-2022 runners.
           npm_config_msvs_version: '2022'
+
+      # Point node-gyp at the Python we just installed (setup-python updates PATH).
+      - name: Configure node-gyp python
+        if: runner.os == 'macOS' || runner.os == 'Windows'
+        shell: bash
+        run: |
+          echo "python=$(command -v python3 || command -v python)"
+          python3 --version || python --version
+          npm config set python "$(command -v python3 || command -v python)"
 
       - name: Typecheck
         run: npm run typecheck
