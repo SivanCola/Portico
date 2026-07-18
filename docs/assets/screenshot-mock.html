@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Portico — screenshot</title>
+  <style>
+    :root {
+      --bg: #0e1116;
+      --bg-elev: #161b22;
+      --bg-elev-2: #1c2330;
+      --border: #2a313c;
+      --text: #e6edf3;
+      --text-dim: #8b949e;
+      --text-faint: #6e7681;
+      --accent: #4493f8;
+      --ok: #3fb950;
+      --warn: #d29922;
+      --radius: 8px;
+      --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+      --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #05070a;
+      font-family: var(--sans);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 48px;
+    }
+    .stage {
+      width: 1280px;
+      filter: drop-shadow(0 28px 60px rgba(0,0,0,0.55));
+    }
+    .window {
+      background: var(--bg);
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid rgba(42, 49, 60, 0.9);
+      color: var(--text);
+      font-size: 13px;
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      height: 40px;
+      padding: 0 12px 0 78px;
+      border-bottom: 1px solid rgba(42, 49, 60, 0.85);
+      background: var(--bg);
+      position: relative;
+    }
+    .traffic {
+      position: absolute;
+      left: 14px;
+      top: 14px;
+      display: flex;
+      gap: 7px;
+    }
+    .traffic span {
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+    }
+    .traffic .r { background: #ff5f57; }
+    .traffic .y { background: #febc2e; }
+    .traffic .g { background: #28c840; }
+    .brand {
+      font-weight: 600;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .brand img { width: 16px; height: 16px; border-radius: 4px; }
+    .dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--ok);
+      box-shadow: 0 0 5px var(--ok);
+    }
+    .conn {
+      color: var(--text-dim);
+      font-family: var(--mono);
+      font-size: 11px;
+      margin-left: 4px;
+    }
+    .spacer { flex: 1; }
+    .pills {
+      display: inline-flex;
+      gap: 2px;
+      margin-right: 8px;
+    }
+    .pills button {
+      border: none;
+      background: transparent;
+      color: var(--text-faint);
+      padding: 4px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      text-transform: capitalize;
+    }
+    .pills button.active {
+      background: rgba(68, 147, 248, 0.18);
+      color: var(--accent);
+    }
+    .pills button.active .auto {
+      margin-left: 3px;
+      font-size: 9px;
+      font-weight: 600;
+    }
+    .icon-btn {
+      width: 28px; height: 28px;
+      border-radius: 6px;
+      border: none;
+      background: transparent;
+      color: var(--text-dim);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .workspace {
+      display: grid;
+      grid-template-columns: 200px 1fr 320px;
+      height: 720px;
+    }
+    .rail {
+      border-right: 1px solid var(--border);
+      background: var(--bg);
+      display: flex;
+      flex-direction: column;
+      padding: 8px 0;
+    }
+    .rail-head {
+      padding: 4px 12px 10px;
+      font-size: 10px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-faint);
+      font-weight: 600;
+    }
+    .tab {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      margin: 1px 6px;
+      border-radius: 6px;
+      color: var(--text-dim);
+      font-size: 12px;
+    }
+    .tab.active {
+      background: var(--bg-elev-2);
+      color: var(--text);
+    }
+    .tab .t-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--ok); flex-shrink: 0;
+    }
+    .tab .t-dot.off { background: var(--text-faint); }
+    .tab .meta {
+      font-size: 10px;
+      color: var(--text-faint);
+      margin-left: auto;
+      font-family: var(--mono);
+    }
+    .main {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      background: #0b0e13;
+    }
+    .term-toolbar {
+      height: 32px;
+      border-bottom: 1px solid rgba(42, 49, 60, 0.6);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 10px;
+      color: var(--text-faint);
+      font-size: 11px;
+    }
+    .term-toolbar .chip {
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: rgba(68, 147, 248, 0.12);
+      color: var(--accent);
+      font-family: var(--mono);
+      font-size: 10px;
+    }
+    .term {
+      flex: 1;
+      padding: 14px 16px;
+      font-family: var(--mono);
+      font-size: 12.5px;
+      line-height: 1.55;
+      color: #c9d1d9;
+      overflow: hidden;
+    }
+    .term .dim { color: var(--text-faint); }
+    .term .ok { color: var(--ok); }
+    .term .acc { color: var(--accent); }
+    .term .warn { color: var(--warn); }
+    .term .prompt { color: #7ee787; }
+    .term .path { color: #79c0ff; }
+    .term .cursor {
+      display: inline-block;
+      width: 8px; height: 14px;
+      background: var(--text);
+      vertical-align: text-bottom;
+      margin-left: 1px;
+      opacity: 0.85;
+    }
+    .sidebar {
+      border-left: 1px solid var(--border);
+      background: var(--bg-elev);
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+    .side-tabs {
+      display: flex;
+      border-bottom: 1px solid var(--border);
+      padding: 0 8px;
+    }
+    .side-tabs span {
+      padding: 10px 12px;
+      font-size: 11px;
+      color: var(--text-faint);
+      border-bottom: 2px solid transparent;
+    }
+    .side-tabs span.on {
+      color: var(--text);
+      border-bottom-color: var(--accent);
+    }
+    .shelf {
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      flex: 1;
+    }
+    .shelf-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-faint);
+      font-weight: 600;
+    }
+    .thumbs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .thumb {
+      aspect-ratio: 4/3;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background:
+        linear-gradient(145deg, #1a2332 0%, #121820 50%, #0e141c 100%);
+      position: relative;
+      overflow: hidden;
+    }
+    .thumb::before {
+      content: '';
+      position: absolute;
+      inset: 18% 12%;
+      border-radius: 4px;
+      background: linear-gradient(135deg, #3d5a80 0%, #4493f8 40%, #1b3a5c 100%);
+      opacity: 0.85;
+    }
+    .thumb::after {
+      content: 'PNG';
+      position: absolute;
+      bottom: 6px; left: 8px;
+      font-size: 9px;
+      font-family: var(--mono);
+      color: var(--text-dim);
+      background: rgba(0,0,0,0.45);
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+    .thumb.b::before {
+      background: linear-gradient(160deg, #2d4a3e 0%, #3fb950 45%, #1a2e24 100%);
+    }
+    .commit {
+      margin-top: auto;
+      border-top: 1px solid var(--border);
+      padding-top: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .commit input {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      padding: 8px 10px;
+      font-size: 12px;
+      font-family: var(--sans);
+    }
+    .commit .row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .commit .hint {
+      font-size: 10px;
+      color: var(--text-faint);
+      flex: 1;
+    }
+    .btn-primary {
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 6px;
+      padding: 7px 12px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .pf {
+      margin-top: 4px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
+    .pf-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px;
+      border-radius: 6px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      font-size: 11px;
+      margin-top: 8px;
+    }
+    .pf-row .tag {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--accent);
+      background: rgba(68, 147, 248, 0.12);
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    .pf-row .traf {
+      margin-left: auto;
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--text-faint);
+    }
+    .caption {
+      margin-top: 18px;
+      text-align: center;
+      color: #6e7681;
+      font-size: 12px;
+      letter-spacing: 0.02em;
+    }
+  </style>
+</head>
+<body>
+  <div class="stage">
+    <div class="window" id="shot">
+      <div class="topbar">
+        <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+        <div class="brand">
+          <img src="../../build/icon.png" alt="" />
+          Portico
+          <span class="dot"></span>
+        </div>
+        <span class="conn">open@gpu-box:22 · tmux:dev</span>
+        <div class="spacer"></div>
+        <div class="pills">
+          <button class="active">claude<span class="auto">auto</span></button>
+          <button>codex</button>
+          <button>shell</button>
+        </div>
+        <button class="icon-btn" title="palette">⌘</button>
+      </div>
+      <div class="workspace">
+        <aside class="rail">
+          <div class="rail-head">Sessions</div>
+          <div class="tab active">
+            <span class="t-dot"></span>
+            <span>gpu-box</span>
+            <span class="meta">SSH</span>
+          </div>
+          <div class="tab">
+            <span class="t-dot"></span>
+            <span>edge-01</span>
+            <span class="meta">SSH</span>
+          </div>
+          <div class="tab">
+            <span class="t-dot off"></span>
+            <span>Local</span>
+            <span class="meta">PTY</span>
+          </div>
+        </aside>
+        <section class="main">
+          <div class="term-toolbar">
+            <span class="chip">Claude</span>
+            <span>Image bridge · Port forwards</span>
+            <span style="margin-left:auto;font-family:var(--mono)">find ⌘F</span>
+          </div>
+          <div class="term">
+            <div class="dim"># Connected · host key OK · SFTP ready</div>
+            <div><span class="prompt">open@gpu-box</span>:<span class="path">~/work</span>$ claude</div>
+            <div class="ok">Welcome to Claude Code · v2.x</div>
+            <div class="dim">────────────────────────────────────</div>
+            <div style="margin-top:10px" class="dim">› </div>
+            <div style="margin-top:14px">
+              <span class="acc">Portico</span> staged <span class="warn">2</span> images · press Enter in shelf to upload
+            </div>
+            <div class="dim" style="margin-top:6px">
+              → ~/.portico/blobs/&lt;sha&gt;.png
+            </div>
+            <div style="margin-top:16px">
+              <span class="prompt">open@gpu-box</span>:<span class="path">~/work</span>$ <span class="cursor"></span>
+            </div>
+          </div>
+        </section>
+        <aside class="sidebar">
+          <div class="side-tabs">
+            <span class="on">Images</span>
+            <span>Forwards</span>
+          </div>
+          <div class="shelf">
+            <div class="shelf-label">Staged (2)</div>
+            <div class="thumbs">
+              <div class="thumb"></div>
+              <div class="thumb b"></div>
+            </div>
+            <div class="commit">
+              <div class="shelf-label">Commit prompt</div>
+              <input value="Analyze these images" readonly />
+              <div class="row">
+                <span class="hint">Enter to upload + inject</span>
+                <button class="btn-primary">Send</button>
+              </div>
+            </div>
+            <div class="pf">
+              <div class="shelf-label">Listening</div>
+              <div class="pf-row">
+                <span class="tag">−L</span>
+                <span>5173 → 127.0.0.1:5173</span>
+                <span class="traf">↑12K ↓340K</span>
+              </div>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+    <div class="caption">Portico — local images → remote AI over your SSH</div>
+  </div>
+</body>
+</html>
