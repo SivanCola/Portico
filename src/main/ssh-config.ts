@@ -25,7 +25,7 @@
  * must not block manual host entry.
  */
 import { readFile, readdir, stat } from 'node:fs/promises'
-import { join } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { getLogger } from './logger.js'
 import type { ResolvedSshTarget, SshHostAlias } from '@shared/types.js'
@@ -140,7 +140,11 @@ export function parseSshConfig(content: string): SshConfig {
 /** Expand a leading `~` (only form OpenSSH uses for IdentityFile). */
 function expandHome(p: string): string {
   if (p === '~') return homedir()
-  if (p.startsWith('~/') || p.startsWith('~\\')) return homedir() + p.slice(1)
+  if (p.startsWith('~/') || p.startsWith('~\\')) {
+    // Normalize so IdentityFile paths use OS separators on Windows CI.
+    const rest = p.slice(2).split(/[/\\]+/).filter(Boolean)
+    return rest.length === 0 ? homedir() : join(homedir(), ...rest)
+  }
   return p
 }
 
@@ -188,10 +192,12 @@ async function loadFile(
     log.warn('ssh-config', 'include recursion cap reached, stopping', { file, depth })
     return
   }
-  if (seen.has(file)) {
+  // Normalize so Windows path variants (/, \) and relative includes still de-dupe.
+  const key = resolve(file)
+  if (seen.has(key)) {
     return
   }
-  seen.add(file)
+  seen.add(key)
 
   let content: string
   try {
@@ -230,7 +236,8 @@ async function resolveInclude(spec: string, sshDir: string): Promise<string[]> {
   const tokens = spec.split(/\s+/).filter(Boolean)
   const out: string[] = []
   for (const tok of tokens) {
-    const abs = tok.startsWith('/') ? tok : join(sshDir, tok)
+    // OpenSSH paths in config use `/`; after join(), Windows may use `\`.
+    const abs = isAbsolute(tok) ? tok : join(sshDir, tok)
     if (!/[.*?[\]{}]/.test(tok)) {
       out.push(abs)
     } else {
@@ -241,12 +248,13 @@ async function resolveInclude(spec: string, sshDir: string): Promise<string[]> {
 }
 
 /** Expand a glob path to existing files (not directories). */
-async function globFiles(glob: string): Promise<string[]> {
+async function globFiles(globPath: string): Promise<string[]> {
   try {
-    const dirIdx = glob.lastIndexOf('/')
-    if (dirIdx === -1) return []
-    const dir = glob.slice(0, dirIdx)
-    const pat = glob.slice(dirIdx + 1)
+    // Use path.dirname/basename so `C:\…\config.d\*` works on Windows
+    // (lastIndexOf('/') would miss OS separators after path.join).
+    const dir = dirname(globPath)
+    const pat = basename(globPath)
+    if (!dir || pat === '' || pat === '.' || pat === '..') return []
     let entries: string[]
     try {
       entries = await readdir(dir)

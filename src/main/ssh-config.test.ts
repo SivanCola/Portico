@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import {
   parseSshConfig,
   resolveAlias,
@@ -23,7 +23,7 @@ describe('parseSshConfig', () => {
     expect(cfg[0].hostName).toBe('relay.example.com')
     expect(cfg[0].port).toBe(10049)
     expect(cfg[0].user).toBe('root')
-    expect(cfg[0].identityFile).toBe(`${process.env.HOME}/.ssh/noban.pem`)
+    expect(cfg[0].identityFile).toBe(join(homedir(), '.ssh', 'noban.pem'))
   })
 
   it('ignores directives that appear before any Host line', () => {
@@ -128,7 +128,7 @@ describe('resolveAlias', () => {
         IdentityFile ~/.ssh/b
     `)
     const r = await resolveAlias('shared', cfg)
-    expect(r.identityFile).toBe(`${process.env.HOME}/.ssh/a`)
+    expect(r.identityFile).toBe(join(homedir(), '.ssh', 'a'))
   })
 })
 

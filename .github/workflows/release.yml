@@ -69,6 +69,14 @@ jobs:
           node-version: 20
           cache: npm
 
+      # node-gyp (node-pty rebuild) imports distutils; system Python on
+      # macos-latest is 3.12+ without distutils. Pin 3.11 for rebuild.
+      - name: Setup Python 3.11 for node-gyp (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - run: npm ci
 
       - name: Typecheck
