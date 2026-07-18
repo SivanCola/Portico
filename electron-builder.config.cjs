@@ -75,6 +75,8 @@ const config = {
   },
   linux: {
     icon: 'build/icon.png',
+    // Required by fpm/.deb when packaging on CI (maintainer email).
+    maintainer: 'SivanCola <liuxw96@foxmail.com>',
     target: [
       { target: 'AppImage', arch: ['x64'] },
       { target: 'deb', arch: ['x64'] }

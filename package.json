@@ -4,7 +4,10 @@
   "description": "Cross-platform desktop SSH terminal with local-image-paste-into-remote-AI bridge.",
   "private": true,
   "type": "module",
-  "author": "Portico",
+  "author": {
+    "name": "SivanCola",
+    "email": "liuxw96@foxmail.com"
+  },
   "license": "MIT",
   "main": "out/main/index.js",
   "scripts": {
