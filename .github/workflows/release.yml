@@ -86,19 +86,35 @@ jobs:
         with:
           arch: x64
 
+      # Force node-gyp to the setup-python 3.11 interpreter (PATH can still
+      # pick a system 3.12 that lacks distutils on modern runners).
+      - name: Export Python for node-gyp
+        if: runner.os == 'macOS' || runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${pythonLocation:-}" ]; then
+            if [ -x "$pythonLocation/bin/python3" ]; then
+              PY="$pythonLocation/bin/python3"
+            elif [ -x "$pythonLocation/python.exe" ]; then
+              PY="$pythonLocation/python.exe"
+            elif [ -x "$pythonLocation/python" ]; then
+              PY="$pythonLocation/python"
+            else
+              PY="$(command -v python3 || command -v python)"
+            fi
+          else
+            PY="$(command -v python3 || command -v python)"
+          fi
+          echo "Using Python for node-gyp: $PY"
+          "$PY" --version
+          echo "PYTHON=$PY" >> "$GITHUB_ENV"
+          echo "npm_config_python=$PY" >> "$GITHUB_ENV"
+
       - run: npm ci
         env:
           # Help node-gyp pick VS 2022 on windows-2022 runners.
           npm_config_msvs_version: '2022'
-
-      # Point node-gyp at the Python we just installed (setup-python updates PATH).
-      - name: Configure node-gyp python
-        if: runner.os == 'macOS' || runner.os == 'Windows'
-        shell: bash
-        run: |
-          echo "python=$(command -v python3 || command -v python)"
-          python3 --version || python --version
-          npm config set python "$(command -v python3 || command -v python)"
 
       - name: Typecheck
         run: npm run typecheck
@@ -113,6 +129,7 @@ jobs:
         run: npm run dist:${{ env.PORTICO_RELEASE_CHANNEL }} -- --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          npm_config_msvs_version: '2022'
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
