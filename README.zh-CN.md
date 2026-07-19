@@ -61,13 +61,38 @@ Provider 适配器（`src/shared/adapters.ts`）：
 
 ## 安装
 
-通过 tag 触发的 GitHub Actions 打包 **macOS**（x64 + arm64）、**Windows**（x64）、**Linux**（AppImage / deb）：
+从已发布的 Release 下载安装包：
 
 ```text
 https://github.com/SivanCola/Portico/releases
 ```
 
-> **说明：** `0.1.0` 已具备打包与发版流水线。安装包与自动更新请使用**已 Publish 的正式 Release**（不要用 draft）。在正式公开发版前，请先按下文从源码构建。
+| 平台 | 产物 |
+| ---- | ---- |
+| macOS Apple Silicon | `Portico-*-arm64.dmg` / `-arm64-mac.zip` |
+| macOS Intel | `Portico-*.dmg` / `-mac.zip` |
+| Windows | `Portico.Setup.*.exe` |
+| Linux | `Portico-*.AppImage`、`portico_*_amd64.deb` |
+
+也可按下文从源码构建。
+
+### macOS 提示无法打开或已损坏？
+
+当前 Release **未**使用 Apple Developer ID 签名 / 公证，从网上下载后 macOS 可能拦截（「Apple 无法验证 Portico…」/「已损坏」等）。
+
+若来自 [GitHub Releases](https://github.com/SivanCola/Portico/releases) 并已放入 `/Applications`，请先退出 Portico，再运行：
+
+```bash
+sudo xattr -rd com.apple.quarantine /Applications/Portico.app
+```
+
+若安装的是 **Portico Beta**：
+
+```bash
+sudo xattr -rd com.apple.quarantine "/Applications/Portico Beta.app"
+```
+
+然后再次打开应用。也可：**右键 App → 打开**，或 **系统设置 → 隐私与安全性 → 仍要打开**。
 
 ## 开发
 

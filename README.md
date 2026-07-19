@@ -61,13 +61,38 @@ Detection is heuristic (banner / process name) and can be overridden from the to
 
 ## Install
 
-Packaged builds are produced by tag-driven GitHub Actions for **macOS** (x64 + arm64), **Windows** (x64), and **Linux** (AppImage / deb).
+Download a published build from:
 
 ```text
 https://github.com/SivanCola/Portico/releases
 ```
 
-> **Note:** As of `0.1.0`, packaging and the release workflow are in place. Prefer a **published** release (not a draft) for installers and auto-update. Until a public release is cut, build from source below.
+| Platform | Artifact |
+| -------- | -------- |
+| macOS Apple Silicon | `Portico-*-arm64.dmg` / `-arm64-mac.zip` |
+| macOS Intel | `Portico-*.dmg` / `-mac.zip` |
+| Windows | `Portico.Setup.*.exe` |
+| Linux | `Portico-*.AppImage`, `portico_*_amd64.deb` |
+
+Or build from source below.
+
+### macOS: “cannot be opened” / damaged / Gatekeeper?
+
+Current releases are **not** Apple Developer ID–signed or notarized, so macOS may block the app after download (“Apple could not verify Portico…” / “damaged”).
+
+If you installed from [GitHub Releases](https://github.com/SivanCola/Portico/releases) into `/Applications`, quit Portico, then run:
+
+```bash
+sudo xattr -rd com.apple.quarantine /Applications/Portico.app
+```
+
+For **Portico Beta**:
+
+```bash
+sudo xattr -rd com.apple.quarantine "/Applications/Portico Beta.app"
+```
+
+Then open the app again (or: right-click the app → **Open**, or **System Settings → Privacy & Security → Open Anyway**).
 
 ## Develop
 
