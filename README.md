@@ -10,7 +10,7 @@ Copy a screenshot on your Mac → Portico uploads it over your own SSH/SFTP sess
 
 | | |
 | --- | --- |
-| **Version** | `0.1.0` (MVP) |
+| **Version** | `0.1.1` (MVP) |
 | **Stack** | Electron · React · xterm.js · ssh2 · node-pty |
 | **License** | MIT |
 | **Repo** | [SivanCola/Portico](https://github.com/SivanCola/Portico) |

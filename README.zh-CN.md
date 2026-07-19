@@ -10,7 +10,7 @@
 
 | | |
 | --- | --- |
-| **版本** | `0.1.0`（MVP） |
+| **版本** | `0.1.1`（MVP） |
 | **技术栈** | Electron · React · xterm.js · ssh2 · node-pty |
 | **许可证** | MIT |
 | **仓库** | [SivanCola/Portico](https://github.com/SivanCola/Portico) |
