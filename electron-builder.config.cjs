@@ -49,9 +49,17 @@ const config = {
     buildResources: 'build'
   },
   icon: 'build/icon.png',
-  files: ['out/**/*', '!node_modules/**/*'],
-  // node-pty native bindings must load from disk, not asar
-  asarUnpack: ['**/node_modules/node-pty/**/*'],
+  // electron-vite externalizeDepsPlugin leaves runtime deps (ssh2, node-pty,
+  // electron-updater, …) as bare imports. They MUST ship in node_modules —
+  // never exclude them here (that caused ERR_MODULE_NOT_FOUND for ssh2).
+  // electron-builder still prunes devDependencies from the production set.
+  files: ['out/**/*', 'package.json'],
+  // Native addons cannot load from asar; unpack them to app.asar.unpacked.
+  asarUnpack: [
+    '**/node_modules/node-pty/**/*',
+    '**/node_modules/cpu-features/**/*',
+    '**/node_modules/ssh2/**/*.node'
+  ],
   // Always emit per-channel updater metadata (latest.yml / beta.yml) and the
   // blockmap files so the auto-updater has everything it needs on both channels.
   generateUpdatesFilesForAllChannels: true,
